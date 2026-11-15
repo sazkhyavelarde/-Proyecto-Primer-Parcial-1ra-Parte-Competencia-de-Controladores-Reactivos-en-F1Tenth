@@ -2,7 +2,7 @@
 
 Controlador reactivo **Follow the Gap** para un vehículo autónomo F1TENTH en el circuito **Sepang**, desarrollado en ROS 2 Humble y evaluado en el simulador F1TENTH Gym.
 
-**Resultado final:** mejor vuelta de **49.00 s** (partiendo de 62.22 s), 10 vueltas consecutivas sin colisiones y sin activaciones del frenado de emergencia.
+**Resultado final:** mejor vuelta de **49.00 s**, 10 vueltas consecutivas sin colisiones y sin activaciones del frenado de emergencia.
 
 **Evidencia en video:** [`evidencia/PROYECTOPARTE1.webm`](evidencia/PROYECTOPARTE1.webm)
 
