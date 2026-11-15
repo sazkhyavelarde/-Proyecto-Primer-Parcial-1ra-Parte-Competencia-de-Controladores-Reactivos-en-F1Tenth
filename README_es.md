@@ -1,91 +1,122 @@
 # Proyecto F1TENTH – Competencia de Controladores Reactivos
 
+Controlador reactivo **Follow the Gap** para un vehículo autónomo F1TENTH en el circuito **Sepang**, desarrollado en ROS 2 Humble y evaluado en el simulador F1TENTH Gym.
+
+**Resultado final:** mejor vuelta de **49.00 s** (partiendo de 62.22 s), 10 vueltas consecutivas sin colisiones y sin activaciones del frenado de emergencia.
+
+**Evidencia en video:** [`evidencia/PROYECTOPARTE1.webm`](evidencia/PROYECTOPARTE1.webm)
+
+---
+
 ## 1. Descripción del proyecto
 
-El presente proyecto consiste en la implementación de un controlador reactivo para un vehículo autónomo F1TENTH, utilizando ROS 2 Humble y el simulador F1TENTH Gym.
+El objetivo del proyecto es que el vehículo recorra el circuito Sepang de forma autónoma y en el menor tiempo posible, **sin colisionar**, usando únicamente las mediciones del LiDAR y la odometría.
 
-El objetivo principal es lograr que el vehículo recorra de manera autónoma el circuito Sepang, mediante el procesamiento de las mediciones de un sensor LiDAR. Para ello, se implementó el algoritmo **Follow the Gap**, que permite identificar espacios libres y seleccionar una dirección de movimiento en función de los obstáculos detectados.
+Para ello se implementó el algoritmo **Follow the Gap**, un controlador **reactivo**: no utiliza mapa ni trayectoria precalculada, sino que en cada instante busca el espacio libre más conveniente y dirige el vehículo hacia él. Sobre esta base se incorporó un control de velocidad y de estabilidad basado en el modelo dinámico del vehículo, que fue lo que permitió reducir el tiempo de vuelta sin perder estabilidad.
 
-Además del controlador, se implementó un nodo para contabilizar las vueltas y registrar los tiempos obtenidos durante las simulaciones. Esto permite evaluar el desempeño del vehículo y comparar los resultados de las pruebas realizadas.
+Además, se desarrolló un nodo de cronometraje (`lap_counter.py`) que registra tiempos por vuelta y por sector, y genera estadísticas para comparar las pruebas.
 
 ## 2. Herramientas utilizadas
 
-Para el desarrollo del proyecto se utilizaron las siguientes herramientas:
+- **Ubuntu** – sistema operativo del entorno de simulación.
+- **ROS 2 Humble** – comunicación entre nodos mediante tópicos.
+- **Python** – lenguaje de los nodos.
+- **F1TENTH Gym** – simulador del vehículo (modelo dinámico de una sola vía).
+- **RViz** – visualización del vehículo, el mapa, la trayectoria y los tiempos.
+- **Visual Studio Code** – editor de código.
 
-- **Ubuntu:** sistema operativo utilizado para ejecutar el entorno de simulación.
-- **ROS 2 Humble:** plataforma que permite la comunicación entre los nodos del sistema.
-- **Python:** lenguaje utilizado para programar los controladores.
-- **F1TENTH Gym:** simulador empleado para evaluar el comportamiento del vehículo.
-- **RViz:** herramienta utilizada para visualizar el vehículo, el mapa y la información del entorno.
-- **Visual Studio Code:** editor utilizado para desarrollar y modificar los archivos del proyecto.
+## 3. Arquitectura
 
-El circuito seleccionado para las pruebas fue **Sepang**.
+El sistema sigue el ciclo clásico de un vehículo autónomo: **percepción → planificación → control**.
 
-## 3. Funcionamiento del controlador Follow the Gap
+| Nodo | Archivo | Suscribe | Publica | Función |
+|---|---|---|---|---|
+| `reactive_node` | `gap_node.py` | `/scan`, `/ego_racecar/odom` | `/drive`, `/trayectoria` | Controlador Follow the Gap |
+| `lap_counter` | `lap_counter.py` | `/ego_racecar/odom` | — | Cronómetro de vueltas y sectores |
 
-El controlador principal se encuentra en el archivo `gap_node.py` y utiliza el algoritmo Follow the Gap para determinar la dirección de movimiento del vehículo.
+Los comandos se envían como mensajes `AckermannDriveStamped` (velocidad y ángulo de dirección).
 
-El funcionamiento general del controlador se desarrolla de la siguiente manera:
+## 4. Funcionamiento del controlador (`gap_node.py`)
 
-### 3.1. Recepción de datos del LiDAR
+El controlador se ejecuta con cada lectura del LiDAR y realiza las siguientes etapas:
 
-El vehículo recibe las mediciones del sensor LiDAR mediante el tópico `/scan`.
+### 4.1. Preprocesado del LiDAR
+- Filtro de mediana para eliminar lecturas espurias.
+- Interpolación de lecturas inválidas (NaN).
+- Recorte al campo de visión frontal (±90°).
 
-Estas mediciones representan las distancias entre el vehículo y los obstáculos presentes en su entorno.
+### 4.2. Inflado de obstáculos
+- **Extensión de disparidades:** en cada borde de pared (salto brusco de distancia) se extiende el obstáculo el semiancho del vehículo más un margen. Así, cualquier espacio que queda libre es realmente transitable.
+- **Burbuja de seguridad** de 0.30 m alrededor del punto más cercano.
+- El margen de seguridad **aumenta con la velocidad**.
 
-### 3.2. Procesamiento de las mediciones
+### 4.3. Selección del GAP
+- Se identifican los tramos continuos de espacio libre (GAPs).
+- Cada GAP recibe una puntuación adimensional según su **profundidad**, **ancho**, **alineación con el rumbo** y **cambio respecto al GAP anterior**.
+- Se aplica **histéresis**: el GAP solo cambia si el nuevo es claramente mejor, lo que evita oscilaciones (zigzag).
 
-Una vez recibidos los datos, el controlador analiza las distancias disponibles para identificar las zonas por las que el vehículo puede circular.
+### 4.4. Punto objetivo
+- El objetivo es el **centro del tramo más profundo** del GAP elegido, no un rayo aislado, lo que da una referencia estable.
+- En rectas se aplica **centrado lateral**; en curvas, una ligera **trazada interior** (máximo 0.5 m de desplazamiento y nunca a menos de 0.45 m de la pared).
 
-También considera márgenes de seguridad alrededor de los obstáculos, con la finalidad de reducir el riesgo de colisiones.
+### 4.5. Cálculo de la dirección
+- **Geometría de arco** (modelo de bicicleta): δ = atan(L · 2·sen(α) / Ld), con distancia de mirada Ld = 1.2 m + 0.25 · v.
+- **Compensación de subviraje:** a partir de la ganancia de guiñada en régimen permanente del modelo dinámico, se aumenta el ángulo de dirección con la velocidad (×1.30 a 6 m/s, ×2.22 a 12 m/s).
 
-### 3.3. Identificación de espacios libres
+### 4.6. Control de velocidad
+La velocidad objetivo es el **mínimo** de varios límites:
+- **Por curvatura:** v = √(a_lat / κ).
+- **Por frenado:** velocidad desde la que se puede frenar de forma estable dentro de la distancia libre medida **a lo largo del arco planificado**.
+- **Por espacio para girar** hasta la salida de la curva.
+- **Por cercanía a la pared** lateral.
+- **Velocidad de curva adaptativa:** 8.0 m/s en curvas abiertas y 6.25 m/s en horquillas, según la distancia libre.
 
-El algoritmo busca los espacios libres entre los obstáculos detectados.
+### 4.7. Estabilidad en frenada
+- En el modelo del simulador, una frenada fuerte a alta velocidad transfiere carga al eje delantero y vuelve inestable la guiñada (trompo).
+- Al iniciar, el nodo calcula una **tabla de deceleración estable** a partir del análisis de estabilidad del modelo dinámico, y nunca solicita más deceleración que la estable a la velocidad actual.
+- **Realimentación de velocidad de guiñada** activa solo durante frenadas fuertes, comparada con un modelo de referencia que incluye el retardo de la dirección.
 
-A partir de estos espacios, selecciona una dirección objetivo que permita continuar el recorrido.
+### 4.8. Seguridad
+- **Frenado de emergencia (AEB)** por tiempo hasta colisión: si TTC < 0.20 s, frena al máximo estable.
+- **Recuperación anti-atasco** mediante maniobra de reversa.
+- **Fin de carrera:** al completar 10 vueltas el vehículo frena de forma progresiva y se detiene.
 
-### 3.4. Cálculo de la dirección
+## 5. Contador de vueltas (`lap_counter.py`)
 
-Después de seleccionar el punto objetivo, el controlador calcula el ángulo de dirección necesario para orientar el vehículo hacia el espacio libre.
+- Detecta el cruce de la línea de meta (x = `finish_x`, entre `finish_y_min` y `finish_y_max`) en sentido positivo, con rearme al alejarse de la línea.
+- El cronómetro arranca **cuando el vehículo empieza a moverse**.
+- El instante de cruce se **interpola** entre dos mensajes de odometría.
+- Por vuelta: tiempo, diferencia con la mejor vuelta, distancia, velocidad media y máxima, y **3 sectores**.
+- Resumen final: mejor vuelta, promedio, consistencia (desviación) y **vuelta ideal** (suma de los mejores sectores).
+- Historial en `~/f1tenth_logs/sesiones_sepang.csv`.
 
-El ángulo se ajusta considerando las condiciones del circuito y la respuesta del vehículo.
+## 6. Visualización en RViz
 
-### 3.5. Control de velocidad
+El controlador publica en el tópico `/trayectoria` (`MarkerArray`):
+- la trayectoria recorrida, coloreada según la velocidad;
+- la vuelta anterior en gris;
+- el punto objetivo del GAP;
+- un texto con la vuelta actual, la última y la mejor.
 
-La velocidad no permanece constante durante todo el recorrido.
+Para verla, en RViz: **Add → By topic → /trayectoria → MarkerArray**.
 
-El controlador la modifica dependiendo de las condiciones del entorno. En las rectas puede alcanzar velocidades mayores, mientras que en las curvas se reduce para mejorar la estabilidad.
+## 7. Parámetros principales
 
-También se consideran condiciones de frenado cuando el espacio disponible no es suficiente para continuar de forma segura.
+| Parámetro | Valor | Descripción |
+|---|---|---|
+| `max_speed` | 12.0 m/s | Velocidad máxima |
+| `corner_min_speed` | 8.0 m/s | Velocidad mínima objetivo en curvas abiertas |
+| `corner_min_sharp` | 6.25 m/s | Velocidad objetivo en horquillas |
+| `a_lat_max` | 10.0 m/s² | Aceleración lateral máxima |
+| `ld_min` / `ld_gain` | 1.2 m / 0.25 s | Distancia de mirada |
+| `fov_deg` | 90° | Campo de visión utilizado |
+| `car_half_width` | 0.155 m | Semiancho del vehículo |
+| `bubble_radius` | 0.30 m | Burbuja de seguridad |
+| `line_max_offset` | 0.5 m | Desplazamiento máximo de la trazada interior |
+| `ttc_aeb` | 0.20 s | Umbral del frenado de emergencia |
+| `race_laps` | 10 | Vueltas de la carrera |
 
-### 3.6. Publicación de comandos
-
-Finalmente, el controlador publica los comandos de dirección y velocidad mediante el tópico `/drive`.
-
-De esta manera, el vehículo puede modificar su movimiento continuamente a partir de las mediciones del LiDAR.
-
-## 4. Contador de vueltas
-
-Para evaluar el desempeño del controlador, se implementó un nodo adicional denominado `lap_counter.py`.
-
-Este nodo utiliza la información de odometría publicada en el tópico `/ego_racecar/odom` para identificar el movimiento del vehículo y detectar el cruce de una línea de meta configurada.
-
-Entre sus principales funciones se encuentran:
-
-- Contabilizar las vueltas completadas.
-- Registrar el tiempo de cada vuelta.
-- Identificar la vuelta más rápida.
-- Calcular la velocidad promedio y máxima.
-- Dividir el recorrido en tres sectores para registrar tiempos parciales.
-- Obtener estadísticas de las vueltas realizadas.
-- Guardar los resultados en archivos CSV para su posterior análisis.
-
-La ubicación de la línea de meta debe configurarse de acuerdo con el circuito utilizado.
-
-## 5. Estructura del proyecto
-
-Los principales archivos utilizados son:
+## 8. Estructura del proyecto
 
 ```text
 F1Tenth-Repository/
@@ -93,6 +124,8 @@ F1Tenth-Repository/
 ├── README.md
 ├── README_es.md
 ├── iniciar_sepang.sh
+├── evidencia/
+│   └── PROYECTOPARTE1.webm
 │
 └── src/
     ├── controllers/
@@ -110,13 +143,7 @@ F1Tenth-Repository/
             └── Sepang_map.yaml
 ```
 
-El archivo `gap_node.py` contiene el controlador reactivo, mientras que `lap_counter.py` se encarga de registrar los resultados de las vueltas.
-
-El archivo `iniciar_sepang.sh` corresponde al script utilizado para iniciar la simulación.
-
-## 6. Compilación del proyecto
-
-Para compilar los paquetes se debe abrir una terminal de Ubuntu y ejecutar:
+## 9. Compilación
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -125,9 +152,7 @@ colcon build --packages-select controllers f1tenth_gym_ros --symlink-install
 source install/setup.bash
 ```
 
-## 7. Ejecución de la simulación
-
-Una vez compilado el proyecto, se puede iniciar la simulación mediante el siguiente comando:
+## 10. Ejecución
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -136,22 +161,52 @@ source install/setup.bash
 ./iniciar_sepang.sh
 ```
 
-El script permite iniciar la simulación según la configuración establecida en el proyecto.
+Para detener la simulación se presiona **Ctrl+C una sola vez** y se espera a que termine el cierre antes de volver a lanzarla. Si quedaron procesos de una ejecución anterior, se pueden cerrar con:
 
-El controlador y el contador de vueltas deben encontrarse en ejecución para realizar el recorrido y registrar los resultados. Si el script no inicia alguno de estos nodos, será necesario ejecutarlo por separado.
+```bash
+pkill -f gym_bridge; pkill -f reactive_node; pkill -f lap_counter; pkill -f rviz2
+```
 
-## 8. Evaluación del desempeño
+Los registros de cada ejecución se guardan en `~/f1tenth_logs/`.
 
-El desempeño del controlador se analiza principalmente mediante los tiempos de vuelta y el comportamiento del vehículo durante el recorrido.
+## 11. Resultados
 
-Durante las pruebas se consideran aspectos como la capacidad para completar el circuito, la estabilidad en las curvas, la velocidad alcanzada y la respuesta frente a los obstáculos.
+### Ejecución final (10 vueltas consecutivas)
 
-Los registros obtenidos mediante el contador de vueltas permiten comparar diferentes ejecuciones e identificar posibles mejoras en la configuración del controlador.
+| Métrica | Valor |
+|---|---|
+| Mejor vuelta | **49.00 s** |
+| Promedio de vueltas lanzadas | 49.23 s |
+| Consistencia (desviación entre vueltas) | 0.11 s |
+| Holgura mínima a la pared | 0.32 – 0.43 m |
+| Activaciones del AEB | **0** |
+| Colisiones | **0** |
+| Distancia por vuelta | ~486 m |
 
-## 9. Conclusiones
+### Evolución del desarrollo
 
-La implementación del algoritmo Follow the Gap permite controlar el movimiento del vehículo F1TENTH a partir de las mediciones del sensor LiDAR, sin necesidad de establecer previamente una trayectoria completa.
+| Etapa | Problema detectado | Solución | Mejor vuelta |
+|---|---|---|---|
+| Punto de partida | — | — | 62.22 s |
+| 1 | Trompo al frenar fuerte a ~11 m/s | Tabla de deceleración estable | — |
+| 2 | Deriva lateral en rectas | Centrado lateral | — |
+| 3 | Zigzag por la corrección de guiñada | Corrección solo al frenar, con modelo de referencia | — |
+| 4 | Colisión por subviraje en curva larga | Compensación de subviraje con el modelo dinámico | 60.10 s |
+| 5 | — | Ajuste de frenado y look-ahead | 54.83 s |
+| 6 | — | Velocidad de curva adaptativa y trazada interior | 49.44 s |
+| 7 | La visualización retrasaba el control | Visualización optimizada (1 Hz, puntos precalculados) | 49.45 s |
+| **Final** | — | Versión estable | **49.00 s** |
 
-El ajuste de la velocidad y la dirección según las condiciones del entorno permite evaluar el comportamiento del vehículo en diferentes secciones del circuito Sepang.
+Cada cambio se validó primero en un simulador propio construido con el mapa de Sepang y el mismo modelo dinámico del F1TENTH Gym, y después en el simulador oficial.
 
-Por otra parte, el contador de vueltas facilita el registro y análisis de los resultados, proporcionando información útil para comparar el desempeño del controlador durante las simulaciones.
+### Alternativas evaluadas y descartadas
+- **Mayor velocidad en horquillas (6.5 m/s):** reducía ~0.2 s por vuelta, pero en una vuelta la holgura bajó a 0.22 m y se activó el AEB.
+- **Velocidad máxima mayor a 12 m/s:** aumentaba el tiempo de vuelta, porque las frenadas estables se alargan.
+- **Aprendizaje iterativo del perfil de velocidad:** el vehículo aprendía vuelta a vuelta dónde frenar antes y dónde acelerar. Logró 48.64 s, pero aumentó la variabilidad entre vueltas (0.48 s) y produjo un casi-choque, por lo que se priorizó la confiabilidad.
+
+## 12. Conclusiones
+
+- Follow the Gap permite recorrer el circuito usando solo el LiDAR, sin mapa ni trayectoria predefinida.
+- El tiempo de vuelta no estaba limitado por la velocidad en rectas, sino por la **estabilidad en frenada y en curva**. Incorporar el modelo dinámico del vehículo (frenada estable, compensación de subviraje) fue lo que permitió bajar de 62.22 s a 49.00 s.
+- Las métricas registradas (holgura mínima, AEB, consistencia) permitieron justificar cada cambio con datos y descartar las mejoras que comprometían la seguridad.
+- Como trabajo futuro se plantea un planificador global con localización y control predictivo (MPC) para optimizar la trazada completa.

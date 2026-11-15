@@ -1,98 +1,133 @@
 # F1TENTH Project – Reactive Controller Competition
 
+**Follow the Gap** reactive controller for an autonomous F1TENTH vehicle on the **Sepang** circuit, developed with ROS 2 Humble and evaluated in the F1TENTH Gym simulator.
+
+**Final result:** best lap of **49.00 s** (down from 62.22 s), 10 consecutive laps with no collisions and no emergency braking activations.
+
+**Video evidence:** [`evidencia/PROYECTOPARTE1.webm`](evidencia/PROYECTOPARTE1.webm)
+
+*Spanish version: [README_es.md](README_es.md)*
+
+---
+
 ## 1. Project Description
 
-This project focuses on the implementation of a reactive controller for an autonomous F1TENTH vehicle using ROS 2 Humble and the F1TENTH Gym simulator.
+The goal of this project is for the vehicle to drive the Sepang circuit autonomously, as fast as possible and **without colliding**, using only LiDAR and odometry measurements.
 
-The main objective is to enable the vehicle to navigate the Sepang circuit autonomously by processing measurements from a LiDAR sensor. For this purpose, the **Follow the Gap** algorithm was implemented to identify free spaces and select a suitable driving direction based on the obstacles detected in the environment.
+The **Follow the Gap** algorithm was implemented as a **reactive** controller: it uses no map or precomputed trajectory. At every instant it looks for the most suitable free space and steers the vehicle toward it. On top of this, speed and stability control was added based on the vehicle's dynamic model, which is what made it possible to reduce lap time without losing stability.
 
-In addition to the controller, a lap counter node was implemented to record lap times during the simulations. This makes it possible to evaluate the vehicle's performance and compare the results obtained from different tests.
+A timing node was also developed (`lap_counter.py`) that records lap and sector times and generates statistics to compare test runs.
 
 ## 2. Development Tools
 
-The following tools were used during the development of the project:
+- **Ubuntu** – operating system for the simulation environment.
+- **ROS 2 Humble** – communication between nodes through topics.
+- **Python** – language used for the nodes.
+- **F1TENTH Gym** – vehicle simulator (single-track dynamic model).
+- **RViz** – visualization of the vehicle, map, trajectory and lap times.
+- **Visual Studio Code** – code editor.
 
-- **Ubuntu:** operating system used to run the simulation environment.
-- **ROS 2 Humble:** framework used for communication between the system nodes.
-- **Python:** programming language used to develop the controllers.
-- **F1TENTH Gym:** simulator used to evaluate the vehicle's behavior.
-- **RViz:** tool used to visualize the vehicle, the map, and information about the environment.
-- **Visual Studio Code:** code editor used to develop and modify the project files.
+## 3. Architecture
 
-The selected circuit for testing was **Sepang**.
+The system follows the classic autonomous vehicle loop: **perception → planning → control**.
 
-## 3. Follow the Gap Controller
+| Node | File | Subscribes | Publishes | Role |
+|---|---|---|---|---|
+| `reactive_node` | `gap_node.py` | `/scan`, `/ego_racecar/odom` | `/drive`, `/trayectoria` | Follow the Gap controller |
+| `lap_counter` | `lap_counter.py` | `/ego_racecar/odom` | — | Lap and sector timing |
 
-The main controller is implemented in the `gap_node.py` file and uses the Follow the Gap algorithm to determine the vehicle's driving direction.
+Commands are sent as `AckermannDriveStamped` messages (speed and steering angle).
 
-The general operation of the controller is described below.
+## 4. Controller Operation (`gap_node.py`)
 
-### 3.1. LiDAR Data Reception
+The controller runs on every LiDAR scan and performs the following stages:
 
-The vehicle receives LiDAR measurements through the `/scan` topic.
+### 4.1. LiDAR Preprocessing
+- Median filter to remove spurious readings.
+- Interpolation of invalid readings (NaN).
+- Cropping to the forward field of view (±90°).
 
-These measurements represent the distances between the vehicle and obstacles in its surroundings.
+### 4.2. Obstacle Inflation
+- **Disparity extension:** at every wall edge (sudden jump in distance), the obstacle is extended by the vehicle's half-width plus a margin, so every remaining free space is actually drivable.
+- **Safety bubble** of 0.30 m around the closest point.
+- The safety margin **increases with speed**.
 
-### 3.2. Data Processing
+### 4.3. Gap Selection
+- Continuous free-space segments (gaps) are identified.
+- Each gap receives a dimensionless score based on its **depth**, **width**, **alignment with the heading** and **change from the previous gap**.
+- **Hysteresis** is applied: the gap only changes if the new one is clearly better, which prevents oscillation (zigzag).
 
-Once the measurements are received, the controller analyzes the available distances to identify areas where the vehicle can move.
+### 4.4. Target Point
+- The target is the **center of the deepest segment** of the selected gap, not a single ray, which gives a stable reference.
+- **Lateral centering** is applied on straights, and a slight **inside line** in curves (maximum 0.5 m offset, never closer than 0.45 m to the wall).
 
-Safety margins around obstacles are also considered to reduce the risk of collisions.
+### 4.5. Steering Calculation
+- **Arc geometry** (bicycle model): δ = atan(L · 2·sin(α) / Ld), with look-ahead Ld = 1.2 m + 0.25 · v.
+- **Understeer compensation:** using the steady-state yaw gain of the dynamic model, the steering angle is increased with speed (×1.30 at 6 m/s, ×2.22 at 12 m/s).
 
-### 3.3. Free Space Detection
+### 4.6. Speed Control
+The target speed is the **minimum** of several limits:
+- **Curvature:** v = √(a_lat / κ).
+- **Braking:** speed from which the vehicle can brake stably within the free distance measured **along the planned arc**.
+- **Turning space** up to the corner exit.
+- **Proximity to the side wall.**
+- **Adaptive corner speed:** 8.0 m/s in open corners and 6.25 m/s in hairpins, based on the free distance.
 
-The algorithm searches for free spaces between the detected obstacles.
+### 4.7. Braking Stability
+- In the simulator's model, hard braking at high speed shifts load to the front axle and makes the yaw dynamics unstable (spin-out).
+- At startup, the node computes a **stable deceleration table** from a stability analysis of the dynamic model, and never requests more deceleration than is stable at the current speed.
+- **Yaw-rate feedback** is active only during hard braking, compared against a reference model that includes the steering delay.
 
-Based on these spaces, a target direction is selected to allow the vehicle to continue moving along the track.
+### 4.8. Safety
+- **Automatic emergency braking (AEB)** based on time to collision: if TTC < 0.20 s, it brakes at the maximum stable rate.
+- **Anti-stuck recovery** with a reverse maneuver.
+- **End of race:** after completing 10 laps, the vehicle brakes progressively and stops.
 
-### 3.4. Steering Calculation
+## 5. Lap Counter (`lap_counter.py`)
 
-After selecting the target point, the controller calculates the steering angle required to guide the vehicle toward the available free space.
+- Detects the finish line crossing (x = `finish_x`, between `finish_y_min` and `finish_y_max`) in the positive direction, re-arming after moving away from the line.
+- The timer starts **when the vehicle begins to move**.
+- The crossing instant is **interpolated** between two odometry messages.
+- Per lap: time, difference from the best lap, distance, average and maximum speed, and **3 sectors**.
+- Final summary: best lap, average, consistency (standard deviation) and **ideal lap** (sum of best sectors).
+- History saved to `~/f1tenth_logs/sesiones_sepang.csv`.
 
-The steering angle is adjusted according to the track conditions and the vehicle's response.
+## 6. RViz Visualization
 
-### 3.5. Speed Control
+The controller publishes on the `/trayectoria` topic (`MarkerArray`):
+- the driven trajectory, colored by speed;
+- the previous lap in gray;
+- the gap target point;
+- a text with the current, last and best lap.
 
-The vehicle's speed does not remain constant throughout the circuit.
+To display it in RViz: **Add → By topic → /trayectoria → MarkerArray**.
 
-The controller adjusts the speed depending on the surrounding conditions. Higher speeds can be reached on straight sections, while speed is reduced in curves to improve stability.
+## 7. Main Parameters
 
-Braking conditions are also considered when the available space is insufficient for safe movement.
+| Parameter | Value | Description |
+|---|---|---|
+| `max_speed` | 12.0 m/s | Maximum speed |
+| `corner_min_speed` | 8.0 m/s | Minimum target speed in open corners |
+| `corner_min_sharp` | 6.25 m/s | Target speed in hairpins |
+| `a_lat_max` | 10.0 m/s² | Maximum lateral acceleration |
+| `ld_min` / `ld_gain` | 1.2 m / 0.25 s | Look-ahead distance |
+| `fov_deg` | 90° | Field of view used |
+| `car_half_width` | 0.155 m | Vehicle half-width |
+| `bubble_radius` | 0.30 m | Safety bubble |
+| `line_max_offset` | 0.5 m | Maximum inside-line offset |
+| `ttc_aeb` | 0.20 s | Emergency braking threshold |
+| `race_laps` | 10 | Race laps |
 
-### 3.6. Command Publication
-
-Finally, the controller publishes steering and speed commands through the `/drive` topic.
-
-This allows the vehicle to continuously adjust its movement based on LiDAR measurements.
-
-## 4. Lap Counter
-
-An additional node called `lap_counter.py` was implemented to evaluate the controller's performance.
-
-This node uses odometry information published through the `/ego_racecar/odom` topic to track vehicle movement and detect when the vehicle crosses a configured finish line.
-
-Its main functions include:
-
-- Counting completed laps.
-- Recording individual lap times.
-- Identifying the fastest lap.
-- Calculating average and maximum speed.
-- Dividing each lap into three sectors to record partial times.
-- Calculating lap statistics.
-- Saving results in CSV files for further analysis.
-
-The finish line location must be configured according to the selected circuit.
-
-## 5. Project Structure
-
-The main project files are organized as follows:
+## 8. Project Structure
 
 ```text
 F1Tenth-Repository/
 │
 ├── README.md
-├── README_ES.md
+├── README_es.md
 ├── iniciar_sepang.sh
+├── evidencia/
+│   └── PROYECTOPARTE1.webm
 │
 └── src/
     ├── controllers/
@@ -110,13 +145,7 @@ F1Tenth-Repository/
             └── Sepang_map.yaml
 ```
 
-The `gap_node.py` file contains the reactive controller, while `lap_counter.py` is responsible for recording lap results.
-
-The `iniciar_sepang.sh` file is the script used to start the simulation.
-
-## 6. Building the Project
-
-To build the ROS 2 packages, open an Ubuntu terminal and execute:
+## 9. Building
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -125,9 +154,7 @@ colcon build --packages-select controllers f1tenth_gym_ros --symlink-install
 source install/setup.bash
 ```
 
-## 7. Running the Simulation
-
-Once the project has been built, the simulation can be started using:
+## 10. Running
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -136,22 +163,52 @@ source install/setup.bash
 ./iniciar_sepang.sh
 ```
 
-The script starts the simulation according to the project configuration.
+To stop the simulation, press **Ctrl+C once** and wait for the shutdown to finish before launching again. If processes from a previous run are still alive, they can be closed with:
 
-Both the controller and the lap counter must be running to complete the circuit and record results. If the script does not launch one of these nodes, it must be started separately.
+```bash
+pkill -f gym_bridge; pkill -f reactive_node; pkill -f lap_counter; pkill -f rviz2
+```
 
-## 8. Performance Evaluation
+Logs from each run are saved in `~/f1tenth_logs/`.
 
-The controller's performance is mainly evaluated through lap times and vehicle behavior during the simulation.
+## 11. Results
 
-The evaluation considers the ability to complete the circuit, stability in curves, achieved speed, and response to obstacles.
+### Final run (10 consecutive laps)
 
-The records generated by the lap counter make it possible to compare different runs and identify potential improvements in the controller configuration.
+| Metric | Value |
+|---|---|
+| Best lap | **49.00 s** |
+| Average flying lap | 49.23 s |
+| Consistency (lap-to-lap deviation) | 0.11 s |
+| Minimum wall clearance | 0.32 – 0.43 m |
+| AEB activations | **0** |
+| Collisions | **0** |
+| Distance per lap | ~486 m |
 
-## 9. Conclusions
+### Development progress
 
-The implementation of the Follow the Gap algorithm allows the F1TENTH vehicle to navigate using LiDAR measurements without requiring a predefined complete trajectory.
+| Stage | Issue found | Solution | Best lap |
+|---|---|---|---|
+| Starting point | — | — | 62.22 s |
+| 1 | Spin-out under hard braking at ~11 m/s | Stable deceleration table | — |
+| 2 | Lateral drift on straights | Lateral centering | — |
+| 3 | Zigzag caused by yaw correction | Correction only while braking, with reference model | — |
+| 4 | Collision due to understeer in a long corner | Understeer compensation from the dynamic model | 60.10 s |
+| 5 | — | Braking and look-ahead tuning | 54.83 s |
+| 6 | — | Adaptive corner speed and inside line | 49.44 s |
+| 7 | Visualization was delaying the control loop | Optimized visualization (1 Hz, precomputed points) | 49.45 s |
+| **Final** | — | Stable version | **49.00 s** |
 
-Adjusting speed and steering according to the surrounding conditions makes it possible to evaluate the vehicle's behavior in different sections of the Sepang circuit.
+Every change was first validated in a custom simulator built with the Sepang map and the same dynamic model as F1TENTH Gym, and then in the official simulator.
 
-Additionally, the lap counter provides useful information for recording and analyzing results, making it easier to compare the controller's performance across different simulation runs.
+### Evaluated and discarded alternatives
+- **Higher hairpin speed (6.5 m/s):** saved ~0.2 s per lap, but in one lap the clearance dropped to 0.22 m and the AEB was triggered.
+- **Maximum speed above 12 m/s:** increased lap time, because stable braking distances become longer.
+- **Iterative learning of the speed profile:** the vehicle learned lap by lap where to brake earlier and where to accelerate. It reached 48.64 s, but increased lap-to-lap variability (0.48 s) and caused a near-collision, so reliability was prioritized.
+
+## 12. Conclusions
+
+- Follow the Gap makes it possible to drive the circuit using only the LiDAR, without a map or predefined trajectory.
+- Lap time was not limited by straight-line speed but by **braking and cornering stability**. Incorporating the vehicle's dynamic model (stable braking, understeer compensation) is what brought the lap time down from 62.22 s to 49.00 s.
+- The recorded metrics (minimum clearance, AEB, consistency) made it possible to justify every change with data and to discard improvements that compromised safety.
+- Future work includes a global planner with localization and model predictive control (MPC) to optimize the full racing line.
