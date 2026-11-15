@@ -325,7 +325,7 @@ class ReactiveFollowGap(Node):
             # --- Trazada: abrirse hacia el exterior antes de la curva ---
             'line_gain': -0.7,             # m de desvío por unidad de 'intensidad' de la curva que viene (0 = centro)
             'line_angle_ref_deg': 12.0,   # ángulo del GAP que se considera curva "plena"
-            'line_max_offset': 0.6,       # m, desvío máximo respecto al centro
+            'line_max_offset': 0.5,       # m, desvío máximo respecto al centro
             'line_wall_keep': 0.45,       # m, distancia mínima a la pared exterior que se respeta
             'line_tau': 0.15,             # s, suavizado del desvío objetivo
             'wall_guard': 0.45,           # m, distancia lateral (desde el centro) que activa la protección
@@ -344,6 +344,7 @@ class ReactiveFollowGap(Node):
             'log_dir': '~/f1tenth_logs',
             'log_rate_hz': 50.0,
             'run_tag': 'SEPANG',
+            'race_laps': 10,              # vueltas de la carrera; al completarlas el carro se detiene (0 = no detener)
             'lap_radius': 1.5,            # m, radio de la "meta" alrededor de la pose inicial
             'lap_min_distance': 80.0,     # m recorridos antes de aceptar otra vuelta
             # --- Visualización en RViz ---
@@ -430,6 +431,7 @@ class ReactiveFollowGap(Node):
         # Vueltas
         self.start_pos = None
         self.lap_start = None
+        self.race_done = False
         self.lap_dist = 0.0
         self.lap_count = 0
         self.best_lap = None
@@ -535,6 +537,9 @@ class ReactiveFollowGap(Node):
             self.lap_dist += math.hypot(x - self.pos[0], y - self.pos[1])
         self.pos = (x, y)
 
+        if self.race_done:
+            return
+
         if self.lap_start is None:
             if abs(self.v_real) > 0.1:
                 self.lap_start = now
@@ -575,6 +580,11 @@ class ReactiveFollowGap(Node):
             self.lap_start = now
             self.lap_dist = 0.0
             self._reset_lap_stats()
+            if self.p['race_laps'] > 0 and self.lap_count >= self.p['race_laps']:
+                self.race_done = True
+                self.get_logger().warn(
+                    f'CARRERA TERMINADA ({self.lap_count} vueltas, mejor {self.best_lap:.2f} s): '
+                    f'deteniendo el vehículo')
 
     # ----------------------------------------------------------------- LiDAR
 
@@ -625,7 +635,8 @@ class ReactiveFollowGap(Node):
             self.steering = rev_steer
             self.publish_drive(p['reverse_speed'], rev_steer)
             return
-        if front_x < p['stuck_front'] and abs(v) < 0.2 and self.lap_start is not None:
+        if front_x < p['stuck_front'] and abs(v) < 0.2 and self.lap_start is not None \
+                and not self.race_done:
             self.stuck_accum += dt
         else:
             self.stuck_accum = 0.0
@@ -782,6 +793,9 @@ class ReactiveFollowGap(Node):
         v_target = min(p['max_speed'], v_curv, v_brake, v_turn, v_guard)
         self.dbg = (v_curv, v_brake, v_turn, v_guard, d_free, d_path)
         v_target = max(p['min_speed'], v_target)
+        if self.race_done:
+            # Fin de carrera: frenado progresivo (limitado a la deceleración estable)
+            v_target = 0.0
 
         aeb = False
         if v_pos > 1.0 and front_x / v_pos < p['ttc_aeb']:
@@ -888,8 +902,11 @@ class ReactiveFollowGap(Node):
                 tc = list(self.p['viz_text_color']) + [1.0, 1.0, 1.0]
                 m.color.r, m.color.g, m.color.b = float(tc[0]), float(tc[1]), float(tc[2])
                 m.color.a = 1.0
-                lines = [f"{self.p['run_tag']}  |  vuelta {self.lap_count + 1}"]
-                if self.lap_start is not None:
+                if self.race_done:
+                    lines = [f"{self.p['run_tag']}  |  CARRERA TERMINADA"]
+                else:
+                    lines = [f"{self.p['run_tag']}  |  vuelta {self.lap_count + 1}"]
+                if self.lap_start is not None and not self.race_done:
                     lines.append(f'actual: {time.monotonic() - self.lap_start:5.1f} s  {self.lap_dist:6.1f} m')
                 if self.last_lap_time is not None:
                     lines.append(f'ultima: {self.last_lap_time:.2f} s  {self.last_lap_dist:.1f} m')
