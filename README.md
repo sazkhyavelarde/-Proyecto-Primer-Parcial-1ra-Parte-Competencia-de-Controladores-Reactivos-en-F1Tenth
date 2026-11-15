@@ -2,7 +2,7 @@
 
 **Follow the Gap** reactive controller for an autonomous F1TENTH vehicle on the **Sepang** circuit, developed with ROS 2 Humble and evaluated in the F1TENTH Gym simulator.
 
-**Final result:** best lap of **49.00 s** (down from 62.22 s), 10 consecutive laps with no collisions and no emergency braking activations.
+**Final result:** best lap of **49.00 s**, 10 consecutive laps with no collisions and no emergency braking activations.
 
 **Video evidence:** [`evidencia/PROYECTOPARTE1.webm`](evidencia/PROYECTOPARTE1.webm)
 
