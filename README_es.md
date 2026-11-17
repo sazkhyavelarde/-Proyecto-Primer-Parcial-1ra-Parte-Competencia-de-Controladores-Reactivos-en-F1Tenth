@@ -183,22 +183,6 @@ Los registros de cada ejecución se guardan en `~/f1tenth_logs/`.
 | Colisiones | **0** |
 | Distancia por vuelta | ~486 m |
 
-### Evolución del desarrollo
-
-| Etapa | Problema detectado | Solución | Mejor vuelta |
-|---|---|---|---|
-| Punto de partida | — | — | 62.22 s |
-| 1 | Trompo al frenar fuerte a ~11 m/s | Tabla de deceleración estable | — |
-| 2 | Deriva lateral en rectas | Centrado lateral | — |
-| 3 | Zigzag por la corrección de guiñada | Corrección solo al frenar, con modelo de referencia | — |
-| 4 | Colisión por subviraje en curva larga | Compensación de subviraje con el modelo dinámico | 60.10 s |
-| 5 | — | Ajuste de frenado y look-ahead | 54.83 s |
-| 6 | — | Velocidad de curva adaptativa y trazada interior | 49.44 s |
-| 7 | La visualización retrasaba el control | Visualización optimizada (1 Hz, puntos precalculados) | 49.45 s |
-| **Final** | — | Versión estable | **49.00 s** |
-
-Cada cambio se validó primero en un simulador propio construido con el mapa de Sepang y el mismo modelo dinámico del F1TENTH Gym, y después en el simulador oficial.
-
 ### Alternativas evaluadas y descartadas
 - **Mayor velocidad en horquillas (6.5 m/s):** reducía ~0.2 s por vuelta, pero en una vuelta la holgura bajó a 0.22 m y se activó el AEB.
 - **Velocidad máxima mayor a 12 m/s:** aumentaba el tiempo de vuelta, porque las frenadas estables se alargan.
@@ -207,6 +191,6 @@ Cada cambio se validó primero en un simulador propio construido con el mapa de 
 ## 12. Conclusiones
 
 - Follow the Gap permite recorrer el circuito usando solo el LiDAR, sin mapa ni trayectoria predefinida.
-- El tiempo de vuelta no estaba limitado por la velocidad en rectas, sino por la **estabilidad en frenada y en curva**. Incorporar el modelo dinámico del vehículo (frenada estable, compensación de subviraje) fue lo que permitió bajar de 62.22 s a 49.00 s.
+- El tiempo de vuelta no estaba limitado por la velocidad en rectas, sino por la **estabilidad en frenada y en curva**. Incorporar el modelo dinámico del vehículo (frenada estable, compensación de subviraje) fue lo que permitió alcanzar un tiempo de vuelta de 49.00 s manteniendo la estabilidad.
 - Las métricas registradas (holgura mínima, AEB, consistencia) permitieron justificar cada cambio con datos y descartar las mejoras que comprometían la seguridad.
 - Como trabajo futuro se plantea un planificador global con localización y control predictivo (MPC) para optimizar la trazada completa.

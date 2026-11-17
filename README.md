@@ -185,22 +185,6 @@ Logs from each run are saved in `~/f1tenth_logs/`.
 | Collisions | **0** |
 | Distance per lap | ~486 m |
 
-### Development progress
-
-| Stage | Issue found | Solution | Best lap |
-|---|---|---|---|
-| Starting point | — | — | 62.22 s |
-| 1 | Spin-out under hard braking at ~11 m/s | Stable deceleration table | — |
-| 2 | Lateral drift on straights | Lateral centering | — |
-| 3 | Zigzag caused by yaw correction | Correction only while braking, with reference model | — |
-| 4 | Collision due to understeer in a long corner | Understeer compensation from the dynamic model | 60.10 s |
-| 5 | — | Braking and look-ahead tuning | 54.83 s |
-| 6 | — | Adaptive corner speed and inside line | 49.44 s |
-| 7 | Visualization was delaying the control loop | Optimized visualization (1 Hz, precomputed points) | 49.45 s |
-| **Final** | — | Stable version | **49.00 s** |
-
-Every change was first validated in a custom simulator built with the Sepang map and the same dynamic model as F1TENTH Gym, and then in the official simulator.
-
 ### Evaluated and discarded alternatives
 - **Higher hairpin speed (6.5 m/s):** saved ~0.2 s per lap, but in one lap the clearance dropped to 0.22 m and the AEB was triggered.
 - **Maximum speed above 12 m/s:** increased lap time, because stable braking distances become longer.
@@ -209,6 +193,6 @@ Every change was first validated in a custom simulator built with the Sepang map
 ## 12. Conclusions
 
 - Follow the Gap makes it possible to drive the circuit using only the LiDAR, without a map or predefined trajectory.
-- Lap time was not limited by straight-line speed but by **braking and cornering stability**. Incorporating the vehicle's dynamic model (stable braking, understeer compensation) is what brought the lap time down from 62.22 s to 49.00 s.
+- Lap time was not limited by straight-line speed but by **braking and cornering stability**. Incorporating the vehicle's dynamic model (stable braking, understeer compensation) is what made it possible to reach a 49.00 s lap time while keeping the vehicle stable.
 - The recorded metrics (minimum clearance, AEB, consistency) made it possible to justify every change with data and to discard improvements that compromised safety.
 - Future work includes a global planner with localization and model predictive control (MPC) to optimize the full racing line.
