@@ -153,6 +153,47 @@ def select_gap_target(r, theta, prev_target, params):
     return int(best), len(gaps), best_same
 
 
+def find_objects(raw, angles, xs, ys, upper, max_range, max_size, contrast, max_angle,
+                 min_points=2, min_facing=0.0):
+    """Objetos pequeños (otro coche, una caja) en el escaneo, separados de las paredes.
+
+    Un objeto es un tramo continuo de lecturas cercanas cuyo tamaño total es menor que
+    max_size, separado de lo que lo rodea, y con fondo más lejano al menos a un lado.
+    Las paredes forman tramos largos, por lo que no se detectan como objetos.
+    min_facing descarta trozos de pared vistos de costado: en una superficie que mira al
+    LiDAR (la trasera o el lateral de un coche) los rayos caen juntos, (n_rayos * paso_angular
+    * distancia) / tamaño ~ 1; en un trozo de pared casi paralelo al rayo ese valor es pequeño.
+    Devuelve una lista de (indices, x_min, y_min, y_max).
+    """
+    sel = (np.abs(angles) <= max_angle) & (raw < max_range)
+    idx = np.nonzero(sel)[0]
+    objs = []
+    if idx.size == 0:
+        return objs
+    cut = np.nonzero((np.diff(idx) > 1) | (np.abs(np.diff(raw[idx])) > 0.25))[0]
+    starts = np.r_[0, cut + 1]
+    ends = np.r_[cut, idx.size - 1]
+    for a, b in zip(starts, ends):
+        run = idx[a:b + 1]
+        if run.size < max(2, min_points):
+            continue
+        px, py = xs[run], ys[run]
+        size = math.hypot(float(np.ptp(px)), float(np.ptp(py)))
+        if size > max_size:
+            continue
+        rmin = float(np.min(raw[run]))
+        if min_facing > 0.0 and size > 1e-3:
+            inc = abs(float(angles[1] - angles[0]))
+            if (run.size - 1) * inc * float(np.mean(raw[run])) / size < min_facing:
+                continue
+        before = raw[run[0] - 1] if run[0] > 0 else upper
+        after = raw[run[-1] + 1] if run[-1] + 1 < raw.size else upper
+        # fondo claramente más lejano al menos a un lado (al otro lado puede haber una pared)
+        if before > rmin + contrast or after > rmin + contrast:
+            objs.append((run, float(np.min(px)), float(np.min(py)), float(np.max(py))))
+    return objs
+
+
 def arc_free_distance(xs, ys, kappa, half_width, max_len):
     """
     Longitud libre a lo largo del arco de curvatura kappa que recorrería el
@@ -344,6 +385,34 @@ class ReactiveFollowGap(Node):
             'log_dir': '~/f1tenth_logs',
             'log_rate_hz': 50.0,
             'run_tag': 'SEPANG',
+            # --- Adelantamiento (prueba con dos coches). Desactivado = comportamiento de la parte 1
+            'overtake_enabled': False,
+            'ot_range': 9.0,              # m, alcance de detección de objetos
+            'ot_max_size': 0.85,          # m, tamaño máximo de un objeto (un coche mide ~0.6 x 0.3)
+            'ot_contrast': 0.8,           # m, el fondo a ambos lados debe estar al menos esto más lejos
+            'ot_min_points': 4,           # rayos mínimos de un objeto
+            'ot_min_facing': 0.5,         # descarta trozos de pared vistos de costado (ver find_objects)
+            'ot_margin': 0.18,            # m, separación lateral deseada al pasar
+            'ot_max_target_deg': 20.0,    # solo se adelanta si el GAP está casi recto
+            'ot_follow_gap': 0.8,         # m, distancia mínima al seguir a un coche
+            'ot_follow_time': 0.30,       # s, distancia de seguimiento adicional por velocidad
+            'ot_moving_speed': 1.5,       # m/s, a partir de aquí el objeto se considera un coche en marcha
+            'ot_lane_extra': 12.0,        # m, carril libre necesario por delante del coche para pasar
+            'ot_lane_time': 1.0,          # s, carril libre adicional por velocidad
+            'ot_follow_decel': 3.0,       # m/s², deceleración usada para seguir
+            'ot_pass_side': 1,            # lado de adelantamiento: 1 izquierda, -1 derecha, 0 automático
+            'ot_pass_offset': 0.40,       # m, desvío lateral al adelantar por un lado fijo
+            'ot_tau': 0.12,               # s, suavizado del desvío lateral de adelantamiento
+            'ot_near_angle_deg': 110.0,   # deg, ángulo a cada lado en que se buscan coches
+            'ot_near_back': -1.0,         # m, un coche hasta esta distancia detrás cuenta como "cerca"
+            'ot_hold': 1.5,               # s, se mantiene el lado de paso este tiempo después de ver un coche delante
+            'ot_commit': 1.0,             # m, con el otro coche a menos de esto ya se está pasando: no se aborta
+            'lane_bias': 0.0,             # m, desvío lateral fijo (+ izquierda). 0 = parte 1
+            # --- Obstáculos fijos. 0 = comportamiento de la parte 1
+            'obs_margin_extra': 0.0,      # m, margen lateral extra mientras hay un obstáculo pequeño cerca
+            'obs_range': 8.0,             # m, distancia a la que se buscan obstáculos pequeños
+            'obs_angle_deg': 45.0,        # deg, ángulo a cada lado del frente donde se buscan
+            'obs_hold': 0.6,              # s, tiempo que se mantiene el margen extra después de verlo
             'race_laps': 10,              # vueltas de la carrera; al completarlas el carro se detiene (0 = no detener)
             'lap_radius': 1.5,            # m, radio de la "meta" alrededor de la pose inicial
             'lap_min_distance': 80.0,     # m recorridos antes de aceptar otra vuelta
@@ -357,6 +426,9 @@ class ReactiveFollowGap(Node):
             'viz_width': 0.08,            # m, grosor de la línea
             'viz_text_color': [1.0, 0.15, 0.15],  # RGB del texto (rojo)
             'viz_text_size': 1.2,         # m, alto de las letras
+            'viz_text_dy': 2.5,           # m, posición del texto respecto a la salida (eje y)
+            'viz_speed_colors': True,     # línea coloreada por velocidad; False = color del texto
+            'viz_show_target': False,     # esfera en el punto objetivo del GAP (True para depurar)
         }
         for k, v in defaults.items():
             self.declare_parameter(k, v)
@@ -398,6 +470,7 @@ class ReactiveFollowGap(Node):
         self.viz_prev_pts = []
         self.viz_prev_dirty = False
         self.viz_target = None   # (x, y) en el frame del LiDAR
+        self.viz_target_cleared = False
         self.last_lap_time = None
         self.last_lap_dist = None
         self.viz_pub = None
@@ -410,6 +483,12 @@ class ReactiveFollowGap(Node):
         self.target_angle_f = 0.0
         self.prev_target = None
         self.y_ref = 0.0
+        self.ot_prev_x = None
+        self.ot_vrel = 0.0
+        self.ot_side = 0
+        self.ot_active = False
+        self.ot_near_timer = 0.0
+        self.obs_timer = 0.0
         self.steering = 0.0
         self.last_cmd_speed = 0.0
 
@@ -529,7 +608,11 @@ class ReactiveFollowGap(Node):
             if not self.viz_cur or math.hypot(x - self.viz_cur[-1][0], y - self.viz_cur[-1][1]) >= self.p['viz_point_spacing']:
                 self.viz_cur.append((x, y))
                 self.viz_cur_pts.append(Point(x=x, y=y, z=0.05))
-                self.viz_cur_cols.append(self._speed_color(max(0.0, self.v_real), self.p['max_speed']))
+                if self.p['viz_speed_colors']:
+                    self.viz_cur_cols.append(self._speed_color(max(0.0, self.v_real), self.p['max_speed']))
+                else:
+                    tc = list(self.p['viz_text_color']) + [1.0, 1.0, 1.0]
+                    self.viz_cur_cols.append(ColorRGBA(r=float(tc[0]), g=float(tc[1]), b=float(tc[2]), a=1.0))
 
         if self.start_pos is None:
             self.start_pos = (x, y)
@@ -648,9 +731,79 @@ class ReactiveFollowGap(Node):
             self.publish_drive(p['reverse_speed'], 0.0)
             return
 
+        # ---------- Objetos (otro coche, cajas): se separan de las paredes
+        obj = None
+        self.ot_near = False
+        raw_w, xs_w, ys_w = raw, xs, ys      # solo paredes (para centrado y frenado)
+        raw_ftg = raw                        # lo que ve el Follow the Gap
+        if p['overtake_enabled']:
+            objs = find_objects(raw, angles, xs, ys, upper, p['ot_range'], p['ot_max_size'],
+                                p['ot_contrast'], math.radians(p['ot_near_angle_deg']),
+                                p['ot_min_points'], p['ot_min_facing'])
+            self.ot_nobj = len(objs)
+            if objs:
+                raw_w = raw.copy()
+                for run, _, _, _ in objs:
+                    raw_w[run] = upper
+                xs_w = raw_w * np.cos(angles)
+                ys_w = raw_w * np.sin(angles)
+                self.ot_near = any(o[1] > p['ot_near_back'] for o in objs)
+                ahead = [o for o in objs if o[1] > 0.2]
+                if ahead:
+                    obj = min(ahead, key=lambda o: o[1])
+                    # velocidad del objeto estimada a partir de la variación de su distancia
+                    ox = obj[1]
+                    if self.ot_prev_x is not None and abs(ox - self.ot_prev_x) < 1.0:
+                        self.ot_vrel += lp_alpha(dt, 0.2) * ((ox - self.ot_prev_x) / dt - self.ot_vrel)
+                    else:
+                        # objeto nuevo: se supone quieto hasta que su distancia muestre que avanza
+                        self.ot_vrel = -v_pos
+                    self.ot_prev_x = ox
+                    hw0 = p['car_half_width'] + p['ot_margin']
+                    moving = (v_pos + self.ot_vrel) > p['ot_moving_speed']
+                    in_lane0 = obj[2] < hw0 and obj[3] > -hw0
+                    # Un coche que avanza delante en el mismo carril no es un obstáculo para
+                    # elegir el GAP: se sigue la pista y la velocidad se ajusta para seguirlo.
+                    if moving and in_lane0 and self.ot_side == 0:
+                        raw_ftg = raw.copy()
+                        raw_ftg[obj[0]] = upper
+
+            # Mantener el lado de paso un tiempo después de ver el coche: al terminar el
+            # adelantamiento el otro coche queda al lado o detrás (fuera de la vista del LiDAR)
+            # y no hay que volver a su carril hasta dejarlo atrás.
+            if obj is not None and obj[3] > -1.0 and obj[2] < 1.0 and \
+                    v_pos + self.ot_vrel > p['ot_moving_speed']:
+                # solo un coche que avanza, visto delante y dentro de la pista, inicia la espera
+                # (los trozos de pared quietos no)
+                self.ot_near_timer = p['ot_hold']
+            else:
+                self.ot_near_timer = max(0.0, self.ot_near_timer - dt)
+            # "cerca" solo por un coche en marcha visto hace poco; los trozos de pared sueltos
+            # (por ejemplo en la horquilla) ya no desplazan la trazada
+            self.ot_near = self.ot_near_timer > 0.0
+
+        # ---------- Obstáculos fijos: margen extra solo cuando hay uno pequeño cerca.
+        # Así la burbuja de seguridad es más grande al pasar junto a un obstáculo, pero
+        # en las curvas cerradas (sin obstáculos) el margen es el mismo de la parte 1.
+        extra = 0.0
+        if p['obs_margin_extra'] > 0.0:
+            near = find_objects(raw, angles, xs, ys, upper, p['obs_range'], p['ot_max_size'],
+                                p['ot_contrast'], math.radians(p['obs_angle_deg']),
+                                p['ot_min_points'], p['ot_min_facing'])
+            # obstáculo = objeto pequeño con fondo más lejano a ambos lados (las esquinas de
+            # pared solo tienen fondo lejano a un lado)
+            if any(raw[o[0][0] - 1] > float(np.min(raw[o[0]])) + p['ot_contrast'] and
+                   raw[o[0][-1] + 1] > float(np.min(raw[o[0]])) + p['ot_contrast']
+                   for o in near if 0 < o[0][0] and o[0][-1] + 1 < raw.size):
+                self.obs_timer = p['obs_hold']
+            else:
+                self.obs_timer = max(0.0, self.obs_timer - dt)
+            if self.obs_timer > 0.0:
+                extra = p['obs_margin_extra']
+
         # ---------- Follow the Gap
-        half_w = p['car_half_width'] + p['safety_margin'] + p['safety_margin_gain'] * v_pos
-        ext = extend_disparities(raw, inc, half_w, p['disparity_threshold'])
+        half_w = p['car_half_width'] + p['safety_margin'] + p['safety_margin_gain'] * v_pos + extra
+        ext = extend_disparities(raw_ftg, inc, half_w, p['disparity_threshold'])
 
         fov = math.radians(p['fov_deg'])
         fmask = np.abs(angles) <= fov
@@ -665,6 +818,7 @@ class ReactiveFollowGap(Node):
         t_idx, n_gaps, same_gap = select_gap_target(scan_b, theta, self.prev_target, p)
         target_raw = float(theta[t_idx])
         target_depth = float(scan[t_idx])
+
         self.prev_target = target_raw
         self.viz_target = (target_depth * math.cos(target_raw), target_depth * math.sin(target_raw))
 
@@ -672,8 +826,8 @@ class ReactiveFollowGap(Node):
         sin_abs = np.abs(np.sin(angles))
         side_l = (angles >= math.radians(60)) & (angles <= math.radians(120))
         side_r = (angles <= -math.radians(60)) & (angles >= -math.radians(120))
-        d_l = float(np.min(raw[side_l] * sin_abs[side_l])) if np.any(side_l) else upper
-        d_r = float(np.min(raw[side_r] * sin_abs[side_r])) if np.any(side_r) else upper
+        d_l = float(np.min(raw_w[side_l] * sin_abs[side_l])) if np.any(side_l) else upper
+        d_r = float(np.min(raw_w[side_r] * sin_abs[side_r])) if np.any(side_r) else upper
         offset = float(np.clip(0.5 * (d_l - d_r), -p['center_max_offset'], p['center_max_offset']))
         d_side = min(d_l, d_r)
         fade = float(np.clip(1.0 - abs(target_raw) / math.radians(p['center_fade_deg']), 0.0, 1.0))
@@ -686,7 +840,11 @@ class ReactiveFollowGap(Node):
         # es la derecha (exterior), y viceversa. Se limita para no acercarse a la pared exterior.
         half_track = 0.5 * (d_l + d_r)
         sev = float(np.clip(target_raw / math.radians(p['line_angle_ref_deg']), -1.0, 1.0))
-        y_goal = -p['line_gain'] * sev
+        y_goal = -p['line_gain'] * sev + p['lane_bias']
+        if p['overtake_enabled'] and p['ot_pass_side'] != 0 and self.ot_near:
+            # adelantamiento por un lado fijo: desplazarse hacia ese lado mientras haya un
+            # coche cerca (delante o al lado)
+            y_goal = p['ot_pass_side'] * p['ot_pass_offset']
         y_lim = max(0.0, min(p['line_max_offset'], half_track - p['line_wall_keep']))
         y_goal = float(np.clip(y_goal, -y_lim, y_lim))
         self.y_ref += lp_alpha(dt, p['line_tau']) * (y_goal - self.y_ref)
@@ -695,9 +853,72 @@ class ReactiveFollowGap(Node):
         center_corr = fade * math.atan2(p['center_gain'] * lat_err, ld_c)
         target_cmd = target_raw + center_corr
 
+        # ---------- Adelantamiento: pasar por el lado libre del objeto de adelante
+        v_follow = float('inf')
+        self.ot_active = False
+        if obj is not None:
+            _, ox, oy_min, oy_max = obj
+            v_obj = max(0.0, v_pos + self.ot_vrel)
+            hw = p['car_half_width'] + p['ot_margin']
+            in_lane = (oy_min < hw) and (oy_max > -hw)
+            need = 2.0 * hw
+            room_l = d_l - oy_max
+            room_r = oy_min + d_r
+            straight = abs(target_raw) <= math.radians(p['ot_max_target_deg'])
+
+            # carril de paso medido en la dirección de la pista (la del GAP), no la del coche
+            ct, st_ = math.cos(target_raw), math.sin(target_raw)
+            xt = xs_w * ct + ys_w * st_
+            yt = -xs_w * st_ + ys_w * ct
+
+            def lane_free(y_c):
+                m = (xt > 0.3) & (np.abs(yt - y_c) < p['car_half_width'] + 0.05)
+                return float(np.min(xt[m])) if np.any(m) else upper
+
+            side = 0
+            y_pass = 0.0
+            if p['ot_pass_side'] == 0 and straight and max(room_l, room_r) >= need:
+                side = 1 if room_l >= room_r else -1
+                # histéresis: mantener el lado elegido mientras siga habiendo espacio
+                if self.ot_side == -side and (room_l if self.ot_side > 0 else room_r) >= need:
+                    side = self.ot_side
+                y_pass = 0.5 * (oy_max + d_l) if side > 0 else 0.5 * (oy_min - d_r)
+                # no adelantar si el carril de paso se acaba pronto (viene una curva)
+                if lane_free(y_pass) < ox + p['ot_lane_extra'] + p['ot_lane_time'] * v_pos:
+                    side = 0
+            self.ot_side = side
+            if side != 0:
+                ld_p = float(np.clip(ox + 1.0, 2.0, 6.0))
+                target_cmd = math.atan2(y_pass, ld_p)
+                self.y_ref = y_pass - offset
+                self.ot_active = True
+            gap_need = p['ot_follow_gap'] + p['ot_follow_time'] * v_pos
+            v_behind = v_obj + math.sqrt(2.0 * p['ot_follow_decel'] * max(0.0, ox - gap_need))
+            if in_lane:
+                v_follow = v_behind
+            elif p['ot_pass_side'] != 0 and ox > p['ot_commit']:
+                # Lado fijo: solo ponerse al lado del otro coche si el carril de paso sigue libre
+                # lo suficiente (si viene una curva, esperar detrás y pasar en la recta siguiente).
+                y_pc = p['ot_pass_side'] * p['ot_pass_offset'] + offset
+                if lane_free(y_pc) < ox + p['ot_lane_extra'] + p['ot_lane_time'] * v_pos:
+                    v_follow = v_behind
+            elif p['ot_pass_side'] == 0 and side == 0 and ox < 1.5:
+                # al lado y sin carril libre por delante: quedarse detrás
+                v_follow = max(0.0, v_obj - 0.5)
+            self.ot_dbg = (round(ox, 2), round(oy_min, 2), round(oy_max, 2), round(v_obj, 1),
+                           side, in_lane, round(room_l, 2), round(room_r, 2))
+        else:
+            self.ot_prev_x = None
+            self.ot_vrel = 0.0
+            self.ot_side = 0
+            self.ot_dbg = None
+
         # Distancia libre en la dirección del objetivo
         win = max(1, int(math.ceil(math.radians(p['free_window_deg']) / abs(inc))))
         d_free = float(np.min(scan[max(0, t_idx - win):min(scan.size, t_idx + win + 1)]))
+        if raw_w is not raw:
+            scan_w = extend_disparities(raw_w, inc, half_w, p['disparity_threshold'])[fmask]
+            d_free = float(np.min(scan_w[max(0, t_idx - win):min(scan_w.size, t_idx + win + 1)]))
 
         # ---------- Dirección
         self.target_angle_f += lp_alpha(dt, p['target_tau']) * (target_cmd - self.target_angle_f)
@@ -765,7 +986,7 @@ class ReactiveFollowGap(Node):
         # si el coche aún apunta a la pared exterior, esta distancia es corta aunque
         # el objetivo del GAP ya esté girado hacia la salida.
         kappa_plan = math.tan(steer_ftg) / L
-        d_path = arc_free_distance(xs, ys, kappa_plan, half_w, upper)
+        d_path = arc_free_distance(xs_w, ys_w, kappa_plan, half_w, upper)
         vg, S = self.v_grid, self.S_tab
 
         def v_reach(v_end, dist):
@@ -790,7 +1011,7 @@ class ReactiveFollowGap(Node):
         if d_side < p['wall_guard']:
             frac = float(np.clip((d_side - 0.25) / max(p['wall_guard'] - 0.25, 1e-3), 0.0, 1.0))
             v_guard = p['wall_guard_speed'] + frac * (p['max_speed'] - p['wall_guard_speed'])
-        v_target = min(p['max_speed'], v_curv, v_brake, v_turn, v_guard)
+        v_target = min(p['max_speed'], v_curv, v_brake, v_turn, v_guard, v_follow)
         self.dbg = (v_curv, v_brake, v_turn, v_guard, d_free, d_path)
         v_target = max(p['min_speed'], v_target)
         if self.race_done:
@@ -836,7 +1057,11 @@ class ReactiveFollowGap(Node):
             self.get_logger().info(
                 f'v_real {v:5.2f} | v_cmd {speed:5.2f} | giro {self.steering:+.3f} | '
                 f'objetivo {math.degrees(target_raw):+5.1f} deg | libre {d_free:5.1f} m | '
-                f'frente {front_x:5.1f} m | izq {d_l:4.2f} der {d_r:4.2f} | gaps {n_gaps}')
+                f'frente {front_x:5.1f} m | izq {d_l:4.2f} der {d_r:4.2f} | gaps {n_gaps}'
+                + (f' | OT objs {getattr(self, "ot_nobj", 0)} cerca {int(self.ot_near)} '
+                   + (f'auto x {obj[1]:.1f} y [{obj[2]:+.2f},{obj[3]:+.2f}] v_auto {v_pos + self.ot_vrel:.1f}'
+                      if obj is not None else 'auto -')
+                   + f' | y_ref {self.y_ref:+.2f}' if p['overtake_enabled'] else ''))
 
     # --------------------------------------------------------- visualización
 
@@ -861,7 +1086,7 @@ class ReactiveFollowGap(Node):
         m = Marker()
         m.header.frame_id = frame
         m.header.stamp = self.get_clock().now().to_msg()
-        m.ns = 'ftg'
+        m.ns = str(self.p['run_tag'])   # cada coche con su propio grupo de marcadores
         m.id = mid
         m.type = mtype
         m.action = Marker.ADD
@@ -896,7 +1121,7 @@ class ReactiveFollowGap(Node):
             if self.start_pos is not None:
                 m = self._base_marker(2, Marker.TEXT_VIEW_FACING, frame)
                 m.pose.position.x = self.start_pos[0]
-                m.pose.position.y = self.start_pos[1] + 2.5
+                m.pose.position.y = self.start_pos[1] + float(self.p['viz_text_dy'])
                 m.pose.position.z = 1.0
                 m.scale.z = float(self.p['viz_text_size'])
                 tc = list(self.p['viz_text_color']) + [1.0, 1.0, 1.0]
@@ -915,7 +1140,7 @@ class ReactiveFollowGap(Node):
                 m.text = '\n'.join(lines)
                 arr.markers.append(m)
 
-            if self.viz_target is not None:
+            if self.viz_target is not None and self.p['viz_show_target']:
                 m = self._base_marker(3, Marker.SPHERE, self.p['viz_laser_frame'])
                 m.pose.position.x, m.pose.position.y = self.viz_target
                 m.pose.position.z = 0.1
@@ -923,6 +1148,12 @@ class ReactiveFollowGap(Node):
                 m.color.r, m.color.g, m.color.b, m.color.a = 1.0, 0.0, 1.0, 0.9
                 arr.markers.append(m)
 
+            if not self.p['viz_show_target'] and not self.viz_target_cleared:
+                # borrar la esfera que pudo quedar en RViz de una corrida anterior
+                m = self._base_marker(3, Marker.SPHERE, self.p['viz_laser_frame'])
+                m.action = Marker.DELETE
+                arr.markers.append(m)
+                self.viz_target_cleared = True
             self.viz_pub.publish(arr)
             ms = 1000.0 * (time.monotonic() - t_pub)
             if ms > 15.0:

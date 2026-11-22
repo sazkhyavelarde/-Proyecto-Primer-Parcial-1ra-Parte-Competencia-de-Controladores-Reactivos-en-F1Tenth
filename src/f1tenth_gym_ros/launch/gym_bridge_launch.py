@@ -29,11 +29,8 @@ import yaml
 
 def generate_launch_description():
     ld = LaunchDescription()
-    config = os.path.join(
-        get_package_share_directory('f1tenth_gym_ros'),
-        'config',
-        'sim.yaml'
-        )
+    config = os.environ.get('F1TENTH_SIM_CONFIG', os.path.join(
+        get_package_share_directory('f1tenth_gym_ros'), 'config', 'sim.yaml'))
     config_dict = yaml.safe_load(open(config, 'r'))
     has_opp = config_dict['bridge']['ros__parameters']['num_agent'] > 1
     teleop = config_dict['bridge']['ros__parameters']['kb_teleop']
