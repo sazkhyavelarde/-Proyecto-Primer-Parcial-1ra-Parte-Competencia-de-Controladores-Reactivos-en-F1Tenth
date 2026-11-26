@@ -2,9 +2,11 @@
 
 **Follow the Gap** reactive controller for an autonomous F1TENTH vehicle on the **Sepang** circuit, developed with ROS 2 Humble and evaluated in the F1TENTH Gym simulator.
 
-**Final result:** best lap of **49.00 s**, 10 consecutive laps with no collisions and no emergency braking activations.
+**Final result:** best lap of **49.09 s**, 10 consecutive laps with no collisions and no emergency braking activations.
 
-**Video evidence:** [`evidencia/PROYECTOPARTE1.webm`](evidencia/PROYECTOPARTE1.webm)
+**Video:** https://youtu.be/4MpEtsWnOw8
+
+*Versión en español: [README_es.md](README_es.md) · Part 2: [README_parte2.md](README_parte2.md)*
 
 *Spanish version: [README_es.md](README_es.md)*
 
@@ -126,8 +128,8 @@ F1Tenth-Repository/
 ├── README.md
 ├── README_es.md
 ├── iniciar_sepang.sh
-├── evidencia/
-│   └── PROYECTOPARTE1.webm
+├── bag_a_csv.py
+├── resumen_carrera.py
 │
 └── src/
     ├── controllers/
@@ -163,10 +165,26 @@ source install/setup.bash
 ./iniciar_sepang.sh
 ```
 
-To stop the simulation, press **Ctrl+C once** and wait for the shutdown to finish before launching again. If processes from a previous run are still alive, they can be closed with:
+The script ends by itself: the vehicle stops after 10 laps, the simulator and RViz close, the summary table is printed and the rosbag recording is converted to CSV. The race finished correctly when you see **"Carrera terminada."**, then **"CSV guardados en ..."**, and the prompt comes back. **Do not press Ctrl+C while it converts.**
+
+**Rosbag recording:** `/scan`, `/ego_racecar/odom` and `/drive` are recorded to `~/f1tenth_bags/PARTE1_<date>/`. At the end, `bag_a_csv.py` creates in the `csv/` folder:
+
+| File | Columns |
+|---|---|
+| `ego_racecar_odom.csv` | time, x, y, heading, linear velocity x/y, angular velocity z |
+| `drive.csv` | time, commanded speed, steering angle |
+| `scan.csv` | time, start angle, increment, r0 … rN (LiDAR ranges) |
+
+If the race is stopped with Ctrl+C, the recording is left unconverted and can be converted by hand:
 
 ```bash
-pkill -f gym_bridge; pkill -f reactive_node; pkill -f lap_counter; pkill -f rviz2
+python3 bag_a_csv.py ~/f1tenth_bags/PARTE1_<date>
+```
+
+If processes from a previous run are still alive, they can be closed with:
+
+```bash
+pkill -f gym_bridge; pkill -f gap_node; pkill -f lap_counter; pkill -f rviz2; pkill -f "ros2 bag"
 ```
 
 Logs from each run are saved in `~/f1tenth_logs/`.
@@ -177,10 +195,10 @@ Logs from each run are saved in `~/f1tenth_logs/`.
 
 | Metric | Value |
 |---|---|
-| Best lap | **49.00 s** |
-| Average flying lap | 49.23 s |
-| Consistency (lap-to-lap deviation) | 0.11 s |
-| Minimum wall clearance | 0.32 – 0.43 m |
+| Best lap | **49.09 s** |
+| Average flying lap | 49.22 s |
+| Consistency (lap-to-lap deviation) | 0.07 s |
+| Minimum wall clearance | 0.30 – 0.45 m |
 | AEB activations | **0** |
 | Collisions | **0** |
 | Distance per lap | ~486 m |
@@ -193,6 +211,6 @@ Logs from each run are saved in `~/f1tenth_logs/`.
 ## 12. Conclusions
 
 - Follow the Gap makes it possible to drive the circuit using only the LiDAR, without a map or predefined trajectory.
-- Lap time was not limited by straight-line speed but by **braking and cornering stability**. Incorporating the vehicle's dynamic model (stable braking, understeer compensation) is what made it possible to reach a 49.00 s lap time while keeping the vehicle stable.
+- Lap time was not limited by straight-line speed but by **braking and cornering stability**. Incorporating the vehicle's dynamic model (stable braking, understeer compensation) is what made it possible to reach a 49.09 s lap time while keeping the vehicle stable.
 - The recorded metrics (minimum clearance, AEB, consistency) made it possible to justify every change with data and to discard improvements that compromised safety.
 - Future work includes a global planner with localization and model predictive control (MPC) to optimize the full racing line.

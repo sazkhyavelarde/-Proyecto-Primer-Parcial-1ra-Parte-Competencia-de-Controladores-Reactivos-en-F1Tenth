@@ -401,6 +401,15 @@ class ReactiveFollowGap(Node):
             'ot_lane_time': 1.0,          # s, carril libre adicional por velocidad
             'ot_follow_decel': 3.0,       # m/s², deceleración usada para seguir
             'ot_pass_side': 1,            # lado de adelantamiento: 1 izquierda, -1 derecha, 0 automático
+            'start_speed': 0.0,           # m/s, velocidad máxima al arrancar (0 = sin arranque lento)
+            'start_time': 0.0,            # s, duración del arranque lento
+            'start_lane_bias': 0.0,       # desplazamiento lateral durante el arranque lento
+            'start_accel': 0.0,           # m/s2, aceleración durante el arranque lento
+            'ot_speed_only': False,       # el otro carro se esquiva como obstáculo; solo se limita la velocidad detrás
+            'ot_pass_hold': 1.0,          # s, tiempo que se mantiene el intento de paso una vez que el carril está libre
+            'ot_obst_clear_range': 15.0,  # m, con un obstáculo fijo a menos de esto no se fuerza el lado de paso
+            'ot_obst_angle_deg': 60.0,    # deg, zona donde se busca ese obstáculo
+            'ot_obst_hold': 1.5,          # s, tiempo que se respeta después de dejar de verlo
             'ot_pass_offset': 0.40,       # m, desvío lateral al adelantar por un lado fijo
             'ot_tau': 0.12,               # s, suavizado del desvío lateral de adelantamiento
             'ot_near_angle_deg': 110.0,   # deg, ángulo a cada lado en que se buscan coches
@@ -409,6 +418,8 @@ class ReactiveFollowGap(Node):
             'ot_commit': 1.0,             # m, con el otro coche a menos de esto ya se está pasando: no se aborta
             'lane_bias': 0.0,             # m, desvío lateral fijo (+ izquierda). 0 = parte 1
             # --- Obstáculos fijos. 0 = comportamiento de la parte 1
+            'obs_brake_walls': False,     # frenado: un obstáculo fijo solo frena si está en el camino del carro
+            'obs_brake_clear': 0.08,      # m, espacio lateral con el que un obstáculo deja de frenar al carro
             'obs_margin_extra': 0.0,      # m, margen lateral extra mientras hay un obstáculo pequeño cerca
             'obs_range': 8.0,             # m, distancia a la que se buscan obstáculos pequeños
             'obs_angle_deg': 45.0,        # deg, ángulo a cada lado del frente donde se buscan
@@ -426,6 +437,24 @@ class ReactiveFollowGap(Node):
             'viz_width': 0.08,            # m, grosor de la línea
             'viz_text_color': [1.0, 0.15, 0.15],  # RGB del texto (rojo)
             'viz_text_size': 1.2,         # m, alto de las letras
+            'viz_text_follow': True,      # el texto de vueltas y tiempos va junto al carro
+            'viz_follow_dy': 3.5,         # m, separación del texto respecto al carro (eje y del mapa)
+            'viz_start_place': 2,         # posición de salida (el oponente arranca adelante)
+            'viz_rival_odom': '',         # odometría del otro carro, solo para el aviso de rebase en RViz
+            'safe_rival': False,          # usar la odometría del otro carro para no chocarlo
+            'sr_lat': 0.8,                # m, separación lateral por debajo de la cual va en el mismo carril
+            'sr_straight': 12.0,          # m, recta libre por delante desde la que se le deja pasar
+            'sr_pass_y': 0.0,             # m, desplazamiento lateral para pasarlo en recta (0 = no se usa)
+            'sr_mask_r': 0.5,             # m, radio alrededor del otro carro que se quita del LiDAR al seguirlo
+            'sr_laser_x': 0.275,          # m, posición del LiDAR delante del centro de odometría
+            'sr_gap_twisty': 3.0,         # m, distancia detrás del otro carro en curvas y obstáculos
+            'sr_range': 10.0,             # m, distancia hacia adelante en la que se vigila al otro carro
+            'sr_gap': 1.2,                # m, distancia mínima centro a centro detrás del otro carro
+            'sr_time': 0.15,              # s, distancia extra por velocidad
+            'sr_decel': 4.0,              # m/s2, frenada usada para acercarse al otro carro
+            'viz_rival_ahead': 5.0,       # m, ventaja inicial del otro carro en la salida
+            'viz_lap_length': 486.7,      # m, largo aproximado de la vuelta
+            'viz_pass_banner_s': 3.0,     # s, duración del aviso de rebase en RViz
             'viz_text_dy': 2.5,           # m, posición del texto respecto a la salida (eje y)
             'viz_speed_colors': True,     # línea coloreada por velocidad; False = color del texto
             'viz_show_target': False,     # esfera en el punto objetivo del GAP (True para depurar)
@@ -458,6 +487,18 @@ class ReactiveFollowGap(Node):
                 for v in (4, 6, 8, 10, 12)))
 
         self.scan_sub = self.create_subscription(LaserScan, '/scan', self.lidar_callback, 10)
+        # Solo para mostrar el rebase y la posición en RViz (no interviene en el manejo)
+        self.ego_total = 0.0
+        self.rival_total = 0.0
+        self.rival_state = None
+        self.sr_mask = False
+        self.sr_pass_side = 0
+        self.sr_side_mem = 0
+        self.ego_pose = None
+        self.rival_pos = None
+        self.rival_leads = None
+        if self.p['viz_rival_odom']:
+            self.rival_sub = self.create_subscription(Odometry, self.p['viz_rival_odom'], self.rival_callback, 10)
         self.odom_sub = self.create_subscription(
             Odometry, self.p['odom_topic'], self.odom_callback, 10)
         self.drive_pub = self.create_publisher(AckermannDriveStamped, '/drive', 10)
@@ -488,6 +529,12 @@ class ReactiveFollowGap(Node):
         self.ot_side = 0
         self.ot_active = False
         self.ot_near_timer = 0.0
+        self.ot_obst_timer = 0.0
+        self.ot_pass_timer = 0.0
+        self.t_start_slow = None
+        self.ot_last_close = False
+        self.passes = 0
+        self.pass_banner_t = None
         self.obs_timer = 0.0
         self.steering = 0.0
         self.last_cmd_speed = 0.0
@@ -592,6 +639,33 @@ class ReactiveFollowGap(Node):
 
     # ------------------------------------------------------------- odometría
 
+    @staticmethod
+    def _yaw_of(q):
+        return math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+
+    def rival_callback(self, msg):
+        x = msg.pose.pose.position.x
+        y = msg.pose.pose.position.y
+        self.rival_state = (x, y, self._yaw_of(msg.pose.pose.orientation),
+                            math.hypot(msg.twist.twist.linear.x, msg.twist.twist.linear.y))
+        if self.rival_pos is not None:
+            self.rival_total += math.hypot(x - self.rival_pos[0], y - self.rival_pos[1])
+        self.rival_pos = (x, y)
+
+    def _check_pass(self):
+        # Cuántas veces el carro ya pasó al otro: se compara la distancia recorrida por cada uno
+        if not self.p['viz_rival_odom'] or self.rival_pos is None:
+            return
+        ventaja = self.ego_total - (self.rival_total + float(self.p['viz_rival_ahead']))
+        n = int(math.floor(ventaja / float(self.p['viz_lap_length']))) + 1
+        if self.rival_leads is None:
+            self.rival_leads = n
+        if n > self.rival_leads:
+            self.passes += n - self.rival_leads
+            self.pass_banner_t = time.monotonic()
+            self.get_logger().info(f'REBASE #{self.passes}')
+        self.rival_leads = n
+
     def odom_callback(self, msg):
         now = time.monotonic()
         self.last_odom_time = now
@@ -602,6 +676,7 @@ class ReactiveFollowGap(Node):
         self.yaw_rate = msg.twist.twist.angular.z
         x = msg.pose.pose.position.x
         y = msg.pose.pose.position.y
+        self.ego_pose = (x, y, self._yaw_of(msg.pose.pose.orientation))
         if msg.header.frame_id:
             self.p['viz_frame'] = msg.header.frame_id
         if self.p['viz_enabled'] and self.lap_start is not None:
@@ -618,6 +693,8 @@ class ReactiveFollowGap(Node):
             self.start_pos = (x, y)
         if self.pos is not None:
             self.lap_dist += math.hypot(x - self.pos[0], y - self.pos[1])
+            self.ego_total += math.hypot(x - self.pos[0], y - self.pos[1])
+            self._check_pass()
         self.pos = (x, y)
 
         if self.race_done:
@@ -697,6 +774,24 @@ class ReactiveFollowGap(Node):
             return
 
         angles = msg.angle_min + np.arange(raw.size) * inc
+        # Mientras se va detrás del otro carro (se conoce su posición por odometría), sus puntos
+        # no se usan para elegir el GAP: así no tapa el paso entre obstáculos. La velocidad
+        # detrás de él la controla v_rival.
+        if p['safe_rival'] and self.sr_mask and self.rival_state is not None and self.ego_pose is not None:
+            ex, ey, eyaw = self.ego_pose
+            rx, ry, ryaw, _ = self.rival_state
+            cx = rx + 0.15 * math.cos(ryaw) - ex
+            cy = ry + 0.15 * math.sin(ryaw) - ey
+            ce, se = math.cos(eyaw), math.sin(eyaw)
+            xl = ce * cx + se * cy - p['sr_laser_x']
+            yl = -se * cx + ce * cy
+            px = raw * np.cos(angles)
+            py = raw * np.sin(angles)
+            m = np.hypot(px - xl, py - yl) < p['sr_mask_r']
+            if np.any(m) and not np.all(m):
+                idx = np.arange(raw.size)
+                raw = raw.copy()
+                raw[m] = np.interp(idx[m], idx[~m], raw[~m])
         v = self._speed_estimate(now)
         v_pos = max(0.0, v)
 
@@ -734,6 +829,9 @@ class ReactiveFollowGap(Node):
         # ---------- Objetos (otro coche, cajas): se separan de las paredes
         obj = None
         self.ot_near = False
+        ot_car_moving = False
+        xs_st = None
+        ys_st = None
         raw_w, xs_w, ys_w = raw, xs, ys      # solo paredes (para centrado y frenado)
         raw_ftg = raw                        # lo que ve el Follow the Gap
         if p['overtake_enabled']:
@@ -741,7 +839,7 @@ class ReactiveFollowGap(Node):
                                 p['ot_contrast'], math.radians(p['ot_near_angle_deg']),
                                 p['ot_min_points'], p['ot_min_facing'])
             self.ot_nobj = len(objs)
-            if objs:
+            if objs and not p['ot_speed_only']:
                 raw_w = raw.copy()
                 for run, _, _, _ in objs:
                     raw_w[run] = upper
@@ -751,6 +849,13 @@ class ReactiveFollowGap(Node):
                 ahead = [o for o in objs if o[1] > 0.2]
                 if ahead:
                     obj = min(ahead, key=lambda o: o[1])
+                    if self.ot_prev_x is not None:
+                        # seguir al mismo objeto entre escaneos (el otro carro), aunque aparezca
+                        # un obstáculo fijo más cerca
+                        x_pred = self.ot_prev_x + self.ot_vrel * dt
+                        cont = min(ahead, key=lambda o: abs(o[1] - x_pred))
+                        if abs(cont[1] - x_pred) < 1.0:
+                            obj = cont
                     # velocidad del objeto estimada a partir de la variación de su distancia
                     ox = obj[1]
                     if self.ot_prev_x is not None and abs(ox - self.ot_prev_x) < 1.0:
@@ -761,12 +866,42 @@ class ReactiveFollowGap(Node):
                     self.ot_prev_x = ox
                     hw0 = p['car_half_width'] + p['ot_margin']
                     moving = (v_pos + self.ot_vrel) > p['ot_moving_speed']
+                    ot_car_moving = moving
+                    self.ot_last_close = moving and ox < 2.0
                     in_lane0 = obj[2] < hw0 and obj[3] > -hw0
                     # Un coche que avanza delante en el mismo carril no es un obstáculo para
                     # elegir el GAP: se sigue la pista y la velocidad se ajusta para seguirlo.
-                    if moving and in_lane0 and self.ot_side == 0:
+                    # Con un obstáculo fijo cerca tampoco: se va detrás del otro carro por el
+                    # mismo hueco que él deja, sin intentar pasarlo ahí.
+                    if moving and (in_lane0 or self.ot_obst_timer > 0.0) and self.ot_side == 0 and not p['ot_speed_only']:
                         raw_ftg = raw.copy()
                         raw_ftg[obj[0]] = upper
+
+            # Obstáculo fijo adelante (visto desde lejos): mientras haya uno cerca no se fuerza
+            # el lado de paso; el carro sigue el hueco libre que deja el obstáculo.
+            seen = False
+            far = find_objects(raw, angles, xs, ys, upper, p['ot_obst_clear_range'], p['ot_max_size'],
+                               p['ot_contrast'], math.radians(p['ot_obst_angle_deg']),
+                               p['ot_min_points'], p['ot_min_facing'])
+            for o in far:
+                if o[1] < 0.2 or o[0][0] <= 0 or o[0][-1] + 1 >= raw.size:
+                    continue
+                if ot_car_moving and obj is not None and abs(o[1] - obj[1]) < 0.8 and \
+                        abs(0.5 * (o[2] + o[3]) - 0.5 * (obj[2] + obj[3])) < 0.8:
+                    continue          # es el otro carro
+                rmin = float(np.min(raw[o[0]]))
+                if raw[o[0][0] - 1] > rmin + p['ot_contrast'] and raw[o[0][-1] + 1] > rmin + p['ot_contrast']:
+                    seen = True
+                    break
+            self.ot_obst_timer = p['ot_obst_hold'] if seen else max(0.0, self.ot_obst_timer - dt)
+
+            # Objetos quietos (obstáculos): no se usan para seguir ni para adelantar, pero sí
+            # para frenar si están en el camino y para decidir si el carril de paso está libre.
+            if objs:
+                st_runs = [o[0] for o in objs if not (ot_car_moving and obj is not None and o is obj)]
+                if st_runs:
+                    sel_st = np.concatenate(st_runs)
+                    xs_st, ys_st = xs[sel_st], ys[sel_st]
 
             # Mantener el lado de paso un tiempo después de ver el coche: al terminar el
             # adelantamiento el otro coche queda al lado o detrás (fuera de la vista del LiDAR)
@@ -786,16 +921,30 @@ class ReactiveFollowGap(Node):
         # Así la burbuja de seguridad es más grande al pasar junto a un obstáculo, pero
         # en las curvas cerradas (sin obstáculos) el margen es el mismo de la parte 1.
         extra = 0.0
+        xs_o = None
         if p['obs_margin_extra'] > 0.0:
             near = find_objects(raw, angles, xs, ys, upper, p['obs_range'], p['ot_max_size'],
                                 p['ot_contrast'], math.radians(p['obs_angle_deg']),
                                 p['ot_min_points'], p['ot_min_facing'])
             # obstáculo = objeto pequeño con fondo más lejano a ambos lados (las esquinas de
             # pared solo tienen fondo lejano a un lado)
-            if any(raw[o[0][0] - 1] > float(np.min(raw[o[0]])) + p['ot_contrast'] and
-                   raw[o[0][-1] + 1] > float(np.min(raw[o[0]])) + p['ot_contrast']
-                   for o in near if 0 < o[0][0] and o[0][-1] + 1 < raw.size):
+            obs_runs = [o[0] for o in near if 0 < o[0][0] and o[0][-1] + 1 < raw.size and
+                        raw[o[0][0] - 1] > float(np.min(raw[o[0]])) + p['ot_contrast'] and
+                        raw[o[0][-1] + 1] > float(np.min(raw[o[0]])) + p['ot_contrast']]
+            if obs_runs:
                 self.obs_timer = p['obs_hold']
+                # Con el otro carro cerca se frena por todo lo que se ve: el carro también es un
+                # objeto pequeño y no debe quitarse del frenado.
+                if p['obs_brake_walls'] and not self.ot_near:
+                    # Para frenar y centrarse se usan solo las paredes. El obstáculo se revisa
+                    # aparte, con el ancho real del carro, sobre el arco que va a recorrer:
+                    # así el carro no frena por un obstáculo que ya va a esquivar.
+                    sel_o = np.concatenate(obs_runs)
+                    xs_o, ys_o = xs[sel_o], ys[sel_o]
+                    raw_w = raw_w.copy()
+                    raw_w[sel_o] = upper
+                    xs_w = raw_w * np.cos(angles)
+                    ys_w = raw_w * np.sin(angles)
             else:
                 self.obs_timer = max(0.0, self.obs_timer - dt)
             if self.obs_timer > 0.0:
@@ -840,11 +989,21 @@ class ReactiveFollowGap(Node):
         # es la derecha (exterior), y viceversa. Se limita para no acercarse a la pared exterior.
         half_track = 0.5 * (d_l + d_r)
         sev = float(np.clip(target_raw / math.radians(p['line_angle_ref_deg']), -1.0, 1.0))
-        y_goal = -p['line_gain'] * sev + p['lane_bias']
-        if p['overtake_enabled'] and p['ot_pass_side'] != 0 and self.ot_near:
+        bias = p['lane_bias']
+        if p['start_speed'] > 0.0 and (self.t_start_slow is None or stamp - self.t_start_slow < p['start_time']):
+            bias = p['start_lane_bias']   # en el arranque lento se carga a un lado para dejar pasar
+        y_goal = -p['line_gain'] * sev + bias
+        obst_ahead = self.ot_obst_timer > 0.0
+        # Solo se corre al carril de paso cuando de verdad puede pasar (carril libre);
+        # mientras espera detrás va por su línea normal, no pegado a un lado.
+        if p['overtake_enabled'] and p['ot_pass_side'] != 0 and self.ot_near and not obst_ahead \
+                and self.ot_pass_timer > 0.0 and not p['ot_speed_only']:
             # adelantamiento por un lado fijo: desplazarse hacia ese lado mientras haya un
             # coche cerca (delante o al lado)
             y_goal = p['ot_pass_side'] * p['ot_pass_offset']
+        if p['safe_rival'] and self.sr_pass_side != 0:
+            # en recta detrás del otro carro: abrirse al lado contrario al que va él para pasarlo
+            y_goal = self.sr_pass_side * p['sr_pass_y']
         y_lim = max(0.0, min(p['line_max_offset'], half_track - p['line_wall_keep']))
         y_goal = float(np.clip(y_goal, -y_lim, y_lim))
         self.y_ref += lp_alpha(dt, p['line_tau']) * (y_goal - self.y_ref)
@@ -856,7 +1015,7 @@ class ReactiveFollowGap(Node):
         # ---------- Adelantamiento: pasar por el lado libre del objeto de adelante
         v_follow = float('inf')
         self.ot_active = False
-        if obj is not None:
+        if obj is not None and ot_car_moving:
             _, ox, oy_min, oy_max = obj
             v_obj = max(0.0, v_pos + self.ot_vrel)
             hw = p['car_half_width'] + p['ot_margin']
@@ -871,10 +1030,20 @@ class ReactiveFollowGap(Node):
             xt = xs_w * ct + ys_w * st_
             yt = -xs_w * st_ + ys_w * ct
 
+            if xs_st is not None:
+                # los obstáculos fijos también ocupan el carril de paso
+                xt = np.concatenate([xt, xs_st * ct + ys_st * st_])
+                yt = np.concatenate([yt, -xs_st * st_ + ys_st * ct])
+
             def lane_free(y_c):
                 m = (xt > 0.3) & (np.abs(yt - y_c) < p['car_half_width'] + 0.05)
                 return float(np.min(xt[m])) if np.any(m) else upper
 
+            if p['ot_pass_side'] != 0:
+                y_pc0 = p['ot_pass_side'] * p['ot_pass_offset'] + offset
+                if ox <= p['ot_commit'] or \
+                        lane_free(y_pc0) >= ox + p['ot_lane_extra'] + p['ot_lane_time'] * v_pos:
+                    self.ot_pass_timer = p['ot_pass_hold']
             side = 0
             y_pass = 0.0
             if p['ot_pass_side'] == 0 and straight and max(room_l, room_r) >= need:
@@ -894,7 +1063,12 @@ class ReactiveFollowGap(Node):
                 self.ot_active = True
             gap_need = p['ot_follow_gap'] + p['ot_follow_time'] * v_pos
             v_behind = v_obj + math.sqrt(2.0 * p['ot_follow_decel'] * max(0.0, ox - gap_need))
-            if in_lane:
+            if p['ot_speed_only']:
+                # El otro carro es un obstáculo más para Follow the Gap; aquí solo se evita
+                # llegarle encima a toda velocidad cuando está justo adelante en el mismo carril.
+                if in_lane:
+                    v_follow = v_behind
+            elif in_lane or obst_ahead:
                 v_follow = v_behind
             elif p['ot_pass_side'] != 0 and ox > p['ot_commit']:
                 # Lado fijo: solo ponerse al lado del otro coche si el carril de paso sigue libre
@@ -907,11 +1081,22 @@ class ReactiveFollowGap(Node):
                 v_follow = max(0.0, v_obj - 0.5)
             self.ot_dbg = (round(ox, 2), round(oy_min, 2), round(oy_max, 2), round(v_obj, 1),
                            side, in_lane, round(room_l, 2), round(room_r, 2))
-        else:
+        elif obj is None:
+            if self.ot_last_close:
+                # el otro carro estaba muy cerca adelante y ya no está adelante: lo pasó
+                self.passes += 1
+                self.pass_banner_t = time.monotonic()
+                self.get_logger().info(f'REBASE #{self.passes}')
+            self.ot_last_close = False
             self.ot_prev_x = None
             self.ot_vrel = 0.0
             self.ot_side = 0
             self.ot_dbg = None
+        else:
+            self.ot_side = 0
+            self.ot_dbg = None
+
+        self.ot_pass_timer = max(0.0, self.ot_pass_timer - dt)
 
         # Distancia libre en la dirección del objetivo
         win = max(1, int(math.ceil(math.radians(p['free_window_deg']) / abs(inc))))
@@ -987,6 +1172,14 @@ class ReactiveFollowGap(Node):
         # el objetivo del GAP ya esté girado hacia la salida.
         kappa_plan = math.tan(steer_ftg) / L
         d_path = arc_free_distance(xs_w, ys_w, kappa_plan, half_w, upper)
+        if xs_o is not None:
+            d_path = min(d_path, arc_free_distance(xs_o, ys_o, kappa_plan,
+                                                   p['car_half_width'] + p['obs_brake_clear'], upper))
+        if xs_st is not None:
+            # objetos quitados del frenado en el adelantamiento: los quietos se revisan con el
+            # ancho real del carro sobre el arco que va a recorrer
+            d_path = min(d_path, arc_free_distance(xs_st, ys_st, kappa_plan,
+                                                   p['car_half_width'] + p['obs_brake_clear'], upper))
         vg, S = self.v_grid, self.S_tab
 
         def v_reach(v_end, dist):
@@ -1011,7 +1204,45 @@ class ReactiveFollowGap(Node):
         if d_side < p['wall_guard']:
             frac = float(np.clip((d_side - 0.25) / max(p['wall_guard'] - 0.25, 1e-3), 0.0, 1.0))
             v_guard = p['wall_guard_speed'] + frac * (p['max_speed'] - p['wall_guard_speed'])
-        v_target = min(p['max_speed'], v_curv, v_brake, v_turn, v_guard, v_follow)
+        # El otro carro es un obstáculo dinámico: si está delante en el mismo carril no se le
+        # llega encima; solo se le pasa cuando hay separación lateral suficiente.
+        v_rival = float('inf')
+        if p['safe_rival'] and self.rival_state is not None and self.ego_pose is not None:
+            ex, ey, eyaw = self.ego_pose
+            rx, ry, _, rv = self.rival_state
+            ce, se = math.cos(eyaw), math.sin(eyaw)
+            xr = ce * (rx - ex) + se * (ry - ey)
+            yr = -se * (rx - ex) + ce * (ry - ey)
+            # se le pasa solo con separación lateral y recta por delante; si no, se va detrás
+            self.sr_mask = False
+            self.sr_pass_side = 0
+            if p['sr_pass_y'] > 0.0 and -0.6 < xr < p['sr_range'] and front_x >= p['sr_straight']:
+                if self.sr_side_mem == 0:
+                    self.sr_side_mem = 1 if yr < 0.0 else -1
+                self.sr_pass_side = self.sr_side_mem
+            else:
+                self.sr_side_mem = 0
+            # En recta manda Follow the Gap (lo ve como obstáculo y lo pasa por el lado libre).
+            # En curvas y obstáculos se va detrás de él, sin dejar que tape el paso.
+            if 0.0 < xr < p['sr_range'] and front_x < p['sr_straight']:
+                self.sr_mask = xr > 1.0 and abs(yr) < p['sr_lat']
+                g = p['sr_gap'] + p['sr_time'] * max(0.0, v_pos)
+                if front_x < p['sr_straight']:
+                    # curvas y obstáculos: ir más atrás para no quedar encerrado entre él y un obstáculo
+                    g = max(g, p['sr_gap_twisty'])
+                if xr <= g:
+                    v_rival = max(0.0, rv - 1.0)
+                else:
+                    v_rival = rv + math.sqrt(2.0 * p['sr_decel'] * (xr - g))
+        v_target = min(p['max_speed'], v_curv, v_brake, v_turn, v_guard, v_follow, v_rival)
+        if p['start_speed'] > 0.0:
+            # arranque lento: durante los primeros segundos no pasa de start_speed
+            if self.t_start_slow is None:
+                self.t_start_slow = stamp
+            t_s = stamp - self.t_start_slow
+            if t_s < p['start_time']:
+                # sale despacio y va acelerando de a poco (start_accel m/s por segundo)
+                v_target = min(v_target, p['start_speed'] + p['start_accel'] * t_s)
         self.dbg = (v_curv, v_brake, v_turn, v_guard, d_free, d_path)
         v_target = max(p['min_speed'], v_target)
         if self.race_done:
@@ -1120,8 +1351,13 @@ class ReactiveFollowGap(Node):
 
             if self.start_pos is not None:
                 m = self._base_marker(2, Marker.TEXT_VIEW_FACING, frame)
-                m.pose.position.x = self.start_pos[0]
-                m.pose.position.y = self.start_pos[1] + float(self.p['viz_text_dy'])
+                if self.p['viz_text_follow'] and self.pos is not None:
+                    # el texto acompaña al carro, siempre a la misma distancia en el mapa
+                    m.pose.position.x = self.pos[0]
+                    m.pose.position.y = self.pos[1] + float(self.p['viz_follow_dy'])
+                else:
+                    m.pose.position.x = self.start_pos[0]
+                    m.pose.position.y = self.start_pos[1] + float(self.p['viz_text_dy'])
                 m.pose.position.z = 1.0
                 m.scale.z = float(self.p['viz_text_size'])
                 tc = list(self.p['viz_text_color']) + [1.0, 1.0, 1.0]
@@ -1137,8 +1373,28 @@ class ReactiveFollowGap(Node):
                     lines.append(f'ultima: {self.last_lap_time:.2f} s  {self.last_lap_dist:.1f} m')
                 if self.best_lap is not None:
                     lines.append(f'mejor: {self.best_lap:.2f} s')
+                if not self.race_done:
+                    lines.append(f'{max(0.0, self.v_real):4.1f} m/s')
+                rebasa = bool(self.p['viz_rival_odom']) or (self.p['overtake_enabled'] and self.p['ot_pass_offset'] > 0.0)
+                if rebasa:
+                    lines.append(f"posicion: P{max(1, int(self.p['viz_start_place']) - self.passes)}")
                 m.text = '\n'.join(lines)
                 arr.markers.append(m)
+
+                # Aviso grande cuando el carro rebasa al otro (dura unos segundos)
+                show = (rebasa and self.pass_banner_t is not None and self.pos is not None and
+                        time.monotonic() - self.pass_banner_t < self.p['viz_pass_banner_s'])
+                b = self._base_marker(4, Marker.TEXT_VIEW_FACING, frame)
+                if show:
+                    b.pose.position.x = self.pos[0]
+                    b.pose.position.y = self.pos[1] - float(self.p['viz_follow_dy'])
+                    b.pose.position.z = 1.5
+                    b.scale.z = 2.0 * float(self.p['viz_text_size'])
+                    b.color.r, b.color.g, b.color.b, b.color.a = 1.0, 0.85, 0.0, 1.0
+                    b.text = 'REBASE!'
+                else:
+                    b.action = Marker.DELETE
+                arr.markers.append(b)
 
             if self.viz_target is not None and self.p['viz_show_target']:
                 m = self._base_marker(3, Marker.SPHERE, self.p['viz_laser_frame'])

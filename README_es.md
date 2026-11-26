@@ -2,9 +2,11 @@
 
 Controlador reactivo **Follow the Gap** para un vehículo autónomo F1TENTH en el circuito **Sepang**, desarrollado en ROS 2 Humble y evaluado en el simulador F1TENTH Gym.
 
-**Resultado final:** mejor vuelta de **49.00 s**, 10 vueltas consecutivas sin colisiones y sin activaciones del frenado de emergencia.
+**Resultado final:** mejor vuelta de **49.09 s**, 10 vueltas consecutivas sin colisiones y sin activaciones del frenado de emergencia.
 
-**Evidencia en video:** [`evidencia/PROYECTOPARTE1.webm`](evidencia/PROYECTOPARTE1.webm)
+**Video:** https://youtu.be/4MpEtsWnOw8
+
+*English version: [README.md](README.md) · Parte 2: [README_parte2_es.md](README_parte2_es.md)*
 
 ---
 
@@ -124,8 +126,8 @@ F1Tenth-Repository/
 ├── README.md
 ├── README_es.md
 ├── iniciar_sepang.sh
-├── evidencia/
-│   └── PROYECTOPARTE1.webm
+├── bag_a_csv.py
+├── resumen_carrera.py
 │
 └── src/
     ├── controllers/
@@ -161,10 +163,26 @@ source install/setup.bash
 ./iniciar_sepang.sh
 ```
 
-Para detener la simulación se presiona **Ctrl+C una sola vez** y se espera a que termine el cierre antes de volver a lanzarla. Si quedaron procesos de una ejecución anterior, se pueden cerrar con:
+El script termina solo: el vehículo se detiene al completar 10 vueltas, se cierran el simulador y RViz, se imprime el cuadro resumen y la grabación rosbag se convierte a CSV. La carrera terminó bien cuando aparecen **"Carrera terminada."**, después **"CSV guardados en ..."** y vuelve el prompt. **No se debe presionar Ctrl+C mientras convierte.**
+
+**Grabación rosbag:** se graban `/scan`, `/ego_racecar/odom` y `/drive` en `~/f1tenth_bags/PARTE1_<fecha>/`. Al terminar, `bag_a_csv.py` crea en la carpeta `csv/`:
+
+| Archivo | Columnas |
+|---|---|
+| `ego_racecar_odom.csv` | tiempo, x, y, rumbo, velocidad lineal x/y, velocidad angular z |
+| `drive.csv` | tiempo, velocidad comandada, ángulo de dirección |
+| `scan.csv` | tiempo, ángulo inicial, incremento, r0 … rN (distancias del LiDAR) |
+
+Si la carrera se corta con Ctrl+C, la grabación queda sin convertir y se convierte a mano:
 
 ```bash
-pkill -f gym_bridge; pkill -f reactive_node; pkill -f lap_counter; pkill -f rviz2
+python3 bag_a_csv.py ~/f1tenth_bags/PARTE1_<fecha>
+```
+
+Si quedaron procesos de una ejecución anterior, se pueden cerrar con:
+
+```bash
+pkill -f gym_bridge; pkill -f gap_node; pkill -f lap_counter; pkill -f rviz2; pkill -f "ros2 bag"
 ```
 
 Los registros de cada ejecución se guardan en `~/f1tenth_logs/`.
@@ -175,10 +193,10 @@ Los registros de cada ejecución se guardan en `~/f1tenth_logs/`.
 
 | Métrica | Valor |
 |---|---|
-| Mejor vuelta | **49.00 s** |
-| Promedio de vueltas lanzadas | 49.23 s |
-| Consistencia (desviación entre vueltas) | 0.11 s |
-| Holgura mínima a la pared | 0.32 – 0.43 m |
+| Mejor vuelta | **49.09 s** |
+| Promedio de vueltas lanzadas | 49.22 s |
+| Consistencia (desviación entre vueltas) | 0.07 s |
+| Holgura mínima a la pared | 0.30 – 0.45 m |
 | Activaciones del AEB | **0** |
 | Colisiones | **0** |
 | Distancia por vuelta | ~486 m |
@@ -191,6 +209,6 @@ Los registros de cada ejecución se guardan en `~/f1tenth_logs/`.
 ## 12. Conclusiones
 
 - Follow the Gap permite recorrer el circuito usando solo el LiDAR, sin mapa ni trayectoria predefinida.
-- El tiempo de vuelta no estaba limitado por la velocidad en rectas, sino por la **estabilidad en frenada y en curva**. Incorporar el modelo dinámico del vehículo (frenada estable, compensación de subviraje) fue lo que permitió alcanzar un tiempo de vuelta de 49.00 s manteniendo la estabilidad.
+- El tiempo de vuelta no estaba limitado por la velocidad en rectas, sino por la **estabilidad en frenada y en curva**. Incorporar el modelo dinámico del vehículo (frenada estable, compensación de subviraje) fue lo que permitió alcanzar un tiempo de vuelta de 49.09 s manteniendo la estabilidad.
 - Las métricas registradas (holgura mínima, AEB, consistencia) permitieron justificar cada cambio con datos y descartar las mejoras que comprometían la seguridad.
 - Como trabajo futuro se plantea un planificador global con localización y control predictivo (MPC) para optimizar la trazada completa.
