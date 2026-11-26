@@ -5,6 +5,7 @@ Controlador reactivo **Follow the Gap** para un vehículo autónomo F1TENTH en e
 **Resultado final:** mejor vuelta de **49.09 s**, 10 vueltas consecutivas sin colisiones y sin activaciones del frenado de emergencia.
 
 **Video:** https://youtu.be/4MpEtsWnOw8
+**Datos (rosbag convertido a CSV):** [CSV parte 1](https://drive.google.com/drive/folders/1DT7dDvZwqSaI45-Ijq5tW_a5sXRcozir?usp=drive_link) · [carpeta completa con el rosbag](https://drive.google.com/drive/folders/1efkPdL0n2lDer6oQz9Afr0IN6jOFYXye?usp=sharing)
 
 *English version: [README.md](README.md) · Parte 2: [README_parte2_es.md](README_parte2_es.md)*
 
