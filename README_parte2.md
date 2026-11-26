@@ -12,6 +12,10 @@ Second part of the F1TENTH project on the **Sepang** circuit (ROS 2 Humble, F1TE
 **Videos:**
 - Part 1 (free track): https://youtu.be/4MpEtsWnOw8
 - Part 2 (two vehicles and obstacles): https://youtu.be/fDcNhzK-DyY
+**Run data (rosbag converted to CSV):**
+- Part 1 CSV: [Drive folder](https://drive.google.com/drive/folders/1DT7dDvZwqSaI45-Ijq5tW_a5sXRcozir?usp=drive_link)
+- Part 2 CSV: [Drive folder](https://drive.google.com/drive/folders/1KrcHtUalAmRdsR-9ACsPp33oC9yzHlQM?usp=drive_link)
+- Full folder (original rosbag + CSV): [Drive](https://drive.google.com/drive/folders/1efkPdL0n2lDer6oQz9Afr0IN6jOFYXye?usp=sharing)
 
 *Versión en español: [README_parte2_es.md](README_parte2_es.md) · Part 1: [README.md](README.md)*
 
