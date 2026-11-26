@@ -13,6 +13,11 @@ Segunda parte del proyecto F1TENTH en el circuito de **Sepang** (ROS 2 Humble, s
 - Parte 1 (circuito libre): https://youtu.be/4MpEtsWnOw8
 - Parte 2 (dos vehículos y obstáculos): https://youtu.be/fDcNhzK-DyY
 
+**Datos de las corridas (rosbag convertido a CSV):**
+- CSV parte 1: [carpeta en Drive](https://drive.google.com/drive/folders/1DT7dDvZwqSaI45-Ijq5tW_a5sXRcozir?usp=drive_link)
+- CSV parte 2: [carpeta en Drive](https://drive.google.com/drive/folders/1KrcHtUalAmRdsR-9ACsPp33oC9yzHlQM?usp=drive_link)
+- Carpeta completa (rosbag original + CSV): [Drive](https://drive.google.com/drive/folders/1efkPdL0n2lDer6oQz9Afr0IN6jOFYXye?usp=sharing)
+
 *English version: [README_parte2.md](README_parte2.md) · Parte 1: [README_es.md](README_es.md)*
 
 ---
