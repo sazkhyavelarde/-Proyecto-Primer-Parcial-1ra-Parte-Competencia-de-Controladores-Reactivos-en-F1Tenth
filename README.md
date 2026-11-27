@@ -4,9 +4,14 @@
 
 **Final result:** best lap of **49.09 s**, 10 consecutive laps with no collisions and no emergency braking activations.
 
-**Video:** https://youtu.be/4MpEtsWnOw8
-
-**Data (rosbag converted to CSV):** [Part 1 CSV](https://drive.google.com/drive/folders/1DT7dDvZwqSaI45-Ijq5tW_a5sXRcozir?usp=drive_link) · [full folder with the rosbag](https://drive.google.com/drive/folders/1efkPdL0n2lDer6oQz9Afr0IN6jOFYXye?usp=sharing)
+**Videos:**
+- Part 1 (free track): https://youtu.be/4MpEtsWnOw8
+- Part 2 (two vehicles and obstacles): https://youtu.be/fDcNhzK-DyY
+  
+**Run data (rosbag converted to CSV):**
+- Part 1 CSV: [Drive folder](https://drive.google.com/drive/folders/1DT7dDvZwqSaI45-Ijq5tW_a5sXRcozir?usp=drive_link)
+- Part 2 CSV: [Drive folder](https://drive.google.com/drive/folders/1KrcHtUalAmRdsR-9ACsPp33oC9yzHlQM?usp=drive_link)
+- Full folder (original rosbag + CSV): [Drive](https://drive.google.com/drive/folders/1efkPdL0n2lDer6oQz9Afr0IN6jOFYXye?usp=sharing)
 
 
 *Versión en español: [README_es.md](README_es.md) · Part 2: [README_parte2.md](README_parte2.md)*
