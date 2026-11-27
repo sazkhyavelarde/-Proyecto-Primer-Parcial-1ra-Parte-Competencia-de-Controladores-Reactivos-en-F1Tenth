@@ -14,9 +14,10 @@
 - Full folder (original rosbag + CSV): [Drive](https://drive.google.com/drive/folders/1efkPdL0n2lDer6oQz9Afr0IN6jOFYXye?usp=sharing)
 
 
-*Versión en español: [README_es.md](README_es.md) · Part 2: [README_parte2.md](README_parte2.md)*
+*Versión en español: [README_es.md](README_es.md) 
+Part 2: [README_parte2.md](README_parte2.md)*
 
-*Spanish version: [README_es.md](README_es.md)*
+
 
 ---
 
